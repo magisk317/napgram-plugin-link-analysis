@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "kind": "native",
+  "id": "ping-pong",
+  "name": "Ping Pong Plugin (Template)",
+  "description": "A native NapGram plugin example that replies pong to ping.",
+  "entry": "dist/index.mjs",
+  "permissions": {
+    "network": [],
+    "fs": [],
+    "instances": [0]
+  }
+}

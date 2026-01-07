@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "dev"]
+  pull_request:
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org/
+          always-auth: true
+      - run: pnpm i
+      - if: ${{ hashFiles('prisma/schema.prisma') != '' }}
+        run: pnpm prisma generate
+        env:
+          DATABASE_URL: "postgresql://postgres:password@localhost:5432/napgram?schema=public"
+      - run: pnpm validate
+      - run: pnpm type-check
