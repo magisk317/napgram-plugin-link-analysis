@@ -2,4 +2,5 @@ dist/
 release/
 .cache/
 node_modules/
-
+*.sh
+*.md

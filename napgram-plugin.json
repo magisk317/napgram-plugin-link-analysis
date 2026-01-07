@@ -1,12 +1,25 @@
 {
   "schemaVersion": 1,
   "kind": "native",
-  "id": "ping-pong",
-  "name": "Ping Pong Plugin (Template)",
-  "description": "A native NapGram plugin example that replies pong to ping.",
+  "id": "link-analysis",
+  "name": "Link Analysis (XHS/Bilibili)",
+  "description": "Parse Xiaohongshu and Bilibili share links and render a quick preview.",
   "entry": "dist/index.mjs",
   "permissions": {
-    "network": [],
+    "network": [
+      "xiaohongshu.com",
+      "www.xiaohongshu.com",
+      "xhslink.com",
+      "bilibili.com",
+      "www.bilibili.com",
+      "m.bilibili.com",
+      "b23.tv",
+      "bili22.cn",
+      "bili23.cn",
+      "bili33.cn",
+      "bili2233.cn",
+      "api.bilibili.com"
+    ],
     "fs": [],
     "instances": [0]
   }
