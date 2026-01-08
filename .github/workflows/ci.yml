@@ -15,9 +15,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org/
-          always-auth: true
+          registry-url: https://npm.pkg.github.com/
+          scope: '@napgram'
       - run: pnpm i
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - if: ${{ hashFiles('prisma/schema.prisma') != '' }}
         run: pnpm prisma generate
         env:

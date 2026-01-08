@@ -3,6 +3,7 @@ import {
   type ForwardMessage,
   type MessageSegment,
   prepareForwardMessagesForQQ,
+  resolveConfig,
 } from '@napgram/sdk';
 import { Buffer } from 'node:buffer';
 import {
@@ -18,6 +19,7 @@ import {
   fetchBiliVideoFromId,
   buildForwardMessagesForBili,
 } from './bili';
+import { defaultConfig, type LinkAnalysisConfig } from './config';
 
 type LinkTarget =
   | { kind: 'xhs'; url: string }
@@ -38,8 +40,16 @@ const plugin = definePlugin({
   version: '0.1.0',
   author: 'NapLink',
   description: 'Parse Xiaohongshu and Bilibili share links and render a quick preview.',
-  async install(ctx) {
-    ctx.logger.info('Link analysis plugin installed');
+  defaultConfig,
+  async install(ctx, config) {
+    const resolvedConfig = resolveConfig(
+      (config ?? ctx?.config) as LinkAnalysisConfig | undefined,
+      defaultConfig,
+    );
+    const logEnabled = resolveLogEnabled(resolvedConfig?.logEnabled);
+    const logger = createPluginLogger(ctx.logger, logEnabled);
+
+    logger.info('Link analysis plugin installed');
 
     // 定期清理过期缓存
     const cleanupInterval = setInterval(() => {
@@ -62,7 +72,7 @@ const plugin = definePlugin({
         const lastSeen = recentlyHandledMessages.get(messageId);
         const now = Date.now();
         if (lastSeen && now - lastSeen < MESSAGE_CACHE_DURATION_MS) {
-          ctx.logger.debug(`Skipping duplicate message event: ${messageId}`);
+          logger.debug(`Skipping duplicate message event: ${messageId}`);
           return;
         }
         recentlyHandledMessages.set(messageId, now);
@@ -91,14 +101,14 @@ const plugin = definePlugin({
         const cacheKey = getCacheKey(target);
         const lastParsed = recentlyParsed.get(cacheKey);
         if (lastParsed && now - lastParsed < CACHE_DURATION_MS) {
-          ctx.logger.debug(`Skipping recently parsed link: ${cacheKey}`);
+          logger.debug(`Skipping recently parsed link: ${cacheKey}`);
           return false;
         }
         return true;
       });
 
       if (!targetsToProcess.length) {
-        ctx.logger.debug('All links were recently parsed, skipping');
+        logger.debug('All links were recently parsed, skipping');
         return;
       }
 
@@ -108,7 +118,7 @@ const plugin = definePlugin({
       for (const target of targetsToProcess) {
         const cacheKey = getCacheKey(target);
         if (recentlyParsed.has(cacheKey)) {
-          ctx.logger.debug(`Skipping already parsed link in current batch: ${cacheKey}`);
+          logger.debug(`Skipping already parsed link in current batch: ${cacheKey}`);
           continue;
         }
         
@@ -140,7 +150,7 @@ const plugin = definePlugin({
               recentlyParsed.set(getCacheKey({ kind: 'xhs', url: note.url }), now);
             }
           } catch (error) {
-            ctx.logger.warn(`XHS parse failed: ${formatError(error)}`);
+            logger.warn(`XHS parse failed: ${formatError(error)}`);
           }
           continue;
         }
@@ -170,7 +180,7 @@ const plugin = definePlugin({
             }
           }
         } catch (error) {
-          ctx.logger.warn(`Bilibili parse failed: ${formatError(error)}`);
+          logger.warn(`Bilibili parse failed: ${formatError(error)}`);
         }
       }
 
@@ -178,12 +188,12 @@ const plugin = definePlugin({
         return;
       }
 
-      await sendForwardPreview(ctx, event, forwardMessages);
+      await sendForwardPreview(ctx, event, forwardMessages, logger);
     });
 
     ctx.onUnload(() => {
       clearInterval(cleanupInterval);
-      ctx.logger.info('Link analysis plugin unloaded');
+      logger.info('Link analysis plugin unloaded');
     });
   },
 });
@@ -596,7 +606,12 @@ function summarizeForwardMessages(messages: ForwardMessage[]): Array<Record<stri
   }));
 }
 
-async function sendForwardPreview(ctx: any, event: any, messages: ForwardMessage[]): Promise<void> {
+async function sendForwardPreview(
+  ctx: any,
+  event: any,
+  messages: ForwardMessage[],
+  logger: PluginLogger,
+): Promise<void> {
   if (!messages.length) {
     return;
   }
@@ -604,11 +619,13 @@ async function sendForwardPreview(ctx: any, event: any, messages: ForwardMessage
   const platform = resolvePlatform(event);
   const preparedMessages =
     platform === 'qq' ? await prepareForwardMessagesForQQ(messages) : messages;
-  ctx.logger.info('LinkAnalysis forward preview', {
-    platform,
-    messageCount: preparedMessages.length,
-    messages: summarizeForwardMessages(preparedMessages.slice(0, 4)),
-  });
+  if (logger.enabled) {
+    logger.info('LinkAnalysis forward preview', {
+      platform,
+      messageCount: preparedMessages.length,
+      messages: summarizeForwardMessages(preparedMessages.slice(0, 4)),
+    });
+  }
   const channelId = resolveChannelId(event);
   const segments: MessageSegment[] = [
     { type: 'forward', data: { messages: preparedMessages } } as MessageSegment
@@ -620,4 +637,45 @@ async function sendForwardPreview(ctx: any, event: any, messages: ForwardMessage
     threadId: event.threadId ?? undefined,
     content: segments,
   });
+}
+
+type PluginLogger = {
+  enabled: boolean;
+  info: (...args: any[]) => void;
+  warn: (...args: any[]) => void;
+  debug: (...args: any[]) => void;
+  error: (...args: any[]) => void;
+};
+
+function resolveLogEnabled(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) {
+      return false;
+    }
+  }
+  return defaultConfig.logEnabled;
+}
+
+function createPluginLogger(base: any, enabled: boolean): PluginLogger {
+  const makeHandler = (method: 'info' | 'warn' | 'debug' | 'error') => {
+    if (!enabled || typeof base?.[method] !== 'function') {
+      return () => {};
+    }
+    return base[method].bind(base);
+  };
+
+  return {
+    enabled,
+    info: makeHandler('info'),
+    warn: makeHandler('warn'),
+    debug: makeHandler('debug'),
+    error: makeHandler('error'),
+  };
 }

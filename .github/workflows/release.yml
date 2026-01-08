@@ -21,9 +21,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org/
-          always-auth: true
+          registry-url: https://npm.pkg.github.com/
+          scope: '@napgram'
       - run: pnpm i
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: pnpm build
       - run: pnpm validate
       - name: Check publish window
@@ -38,7 +40,9 @@ jobs:
             console.log('Publish cooldown disabled');
             process.exit(0);
           }
-          const res = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}`);
+          const res = await fetch(`https://npm.pkg.github.com/@napgram%2f${encodeURIComponent(name.replace('@napgram/', ''))}`, {
+            headers: { Accept: 'application/vnd.npm.install-v1+json' }
+          });
           if (res.status === 404) {
             console.log('Package not found on registry; skip cooldown check');
             process.exit(0);
