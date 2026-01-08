@@ -6,6 +6,7 @@ export type XhsNote = {
   images: string[];
   coverImage?: string;
   url: string;
+  sourceUrl?: string;
 };
 
 export const XHS_DOMAINS = ['xiaohongshu.com', 'www.xiaohongshu.com', 'xhslink.com'] as const;
@@ -53,7 +54,9 @@ export async function fetchXhsNote(rawUrl: string): Promise<XhsNote> {
   }
 
   const { html, url } = await fetchXhsHtml(normalizedUrl);
-  return parseXhsNote(html, url);
+  const note = parseXhsNote(html, url);
+  note.sourceUrl = rawUrl;
+  return note;
 }
 
 export function buildForwardMessagesForXhs(note: XhsNote, senderId: string): ForwardMessage[] {
@@ -280,6 +283,16 @@ function parseXhsNote(html: string, url: string): XhsNote {
     }
   }
 
+  const imageListImages = extractImageListFromHtml(html);
+  if (imageListImages.length) {
+    note.images.push(...imageListImages);
+  }
+
+  const embeddedImages = extractImagesFromHtml(html);
+  if (embeddedImages.length) {
+    note.images.push(...embeddedImages);
+  }
+
   if (!note.title.trim()) {
     note.title = metaTitle.trim() || '未能获取标题';
   }
@@ -294,7 +307,7 @@ function parseXhsNote(html: string, url: string): XhsNote {
 
   note.title = note.title.trim() || '未能获取标题';
   note.content = note.content.trim();
-  note.images = deduplicateUrls(note.images);
+  note.images = deduplicateXhsImages(note.images);
   note.coverImage = note.images[0] || metaCover.trim() || undefined;
 
   return note;
@@ -472,7 +485,7 @@ function formatXhsText(note: XhsNote): string {
     segments.push(`内容：${content}`);
   }
 
-  segments.push(`链接：${simplifyUrl(note.url)}`);
+  segments.push(`链接：${note.sourceUrl || note.url}`);
   return segments.join('\n\n');
 }
 
@@ -487,16 +500,342 @@ function truncateText(value: string, maxLength: number): string {
   return `${trimmed.slice(0, maxLength).trimEnd()}...`;
 }
 
-function simplifyUrl(url: string): string {
-  if (!url) {
-    return url;
+function extractImagesFromHtml(html: string): string[] {
+  const sources: Array<Record<string, any>> = [];
+  const nextData = extractJsonScriptById(html, '__NEXT_DATA__');
+  if (nextData) {
+    sources.push(nextData);
+  }
+  for (const marker of ['window.__INITIAL_STATE__', 'window.__PRELOADED_STATE__', 'window.__INITIAL_DATA__']) {
+    const jsonText = extractJsonAssignment(html, marker);
+    if (!jsonText) {
+      continue;
+    }
+    const parsed = safeJsonParse(jsonText);
+    if (parsed) {
+      sources.push(parsed);
+    }
+  }
+  const results: string[] = [];
+  for (const source of sources) {
+    results.push(...collectImageUrls(source, 6));
+  }
+  const rawMatches = html.match(/https?:\/\/[^"'<>\\s]+/gi) ?? [];
+  for (const match of rawMatches) {
+    const decoded = decodeUnicodeEscapes(match);
+    if (decoded && isLikelyImageUrl(decoded)) {
+      results.push(decoded);
+    }
+  }
+  const escapedMatches = html.match(/https?:\\u002F\\u002F[^"'<>\\s]+/gi) ?? [];
+  for (const match of escapedMatches) {
+    const decoded = decodeUnicodeEscapes(match);
+    if (decoded && isLikelyImageUrl(decoded)) {
+      results.push(decoded);
+    }
+  }
+  return deduplicateUrls(results);
+}
+
+function extractImageListFromHtml(html: string): string[] {
+  const marker = '"imageList":';
+  const index = html.indexOf(marker);
+  if (index === -1) {
+    return [];
+  }
+  const arrayStart = html.indexOf('[', index + marker.length);
+  if (arrayStart === -1) {
+    return [];
+  }
+  const arrayText = extractJsonArray(html, arrayStart);
+  if (!arrayText) {
+    return [];
+  }
+  const wrapper = `{${marker}${arrayText}}`;
+  const parsed = safeJsonParse(wrapper);
+  const list = Array.isArray(parsed?.imageList) ? parsed.imageList : [];
+  const results: string[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const infoList = Array.isArray(item.infoList) ? item.infoList : [];
+    let url = selectImageUrl(infoList, 'WB_DFT');
+    if (!url) {
+      url = selectImageUrl(infoList, 'WB_PRV');
+    }
+    if (!url) {
+      url = selectImageUrl(infoList, '');
+    }
+    if (!url && typeof item.url === 'string') {
+      url = item.url;
+    }
+    const normalized = url ? normalizeMediaUrl(url) : null;
+    if (normalized) {
+      results.push(normalized);
+    }
+  }
+  return results;
+}
+
+function extractJsonArray(html: string, startIndex: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+  let quoteChar = '';
+  for (let i = startIndex; i < html.length; i += 1) {
+    const ch = html[i];
+    if (inString) {
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escapeNext = true;
+        continue;
+      }
+      if (ch === quoteChar) {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === '\'') {
+      inString = true;
+      quoteChar = ch;
+      continue;
+    }
+    if (ch === '[') {
+      depth += 1;
+    } else if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        return html.slice(startIndex, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function selectImageUrl(list: Array<Record<string, any>>, scene: string): string | undefined {
+  if (!Array.isArray(list)) {
+    return undefined;
+  }
+  for (const item of list) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    if (scene && item.imageScene !== scene) {
+      continue;
+    }
+    if (typeof item.url === 'string') {
+      return item.url;
+    }
+  }
+  if (!scene) {
+    return undefined;
+  }
+  return selectImageUrl(list, '');
+}
+
+function extractJsonScriptById(html: string, id: string): Record<string, any> | null {
+  const escapedId = escapeRegExp(id);
+  const pattern = new RegExp(`<script[^>]+id=["']${escapedId}["'][^>]*>([\\s\\S]*?)<\\/script>`, 'i');
+  const match = html.match(pattern);
+  if (!match) {
+    return null;
+  }
+  const content = match[1]?.trim();
+  if (!content) {
+    return null;
+  }
+  return safeJsonParse(content);
+}
+
+function extractJsonAssignment(html: string, marker: string): string | null {
+  const index = html.indexOf(marker);
+  if (index === -1) {
+    return null;
+  }
+  const equalIndex = html.indexOf('=', index);
+  if (equalIndex === -1) {
+    return null;
+  }
+  const start = html.indexOf('{', equalIndex);
+  if (start === -1) {
+    return null;
+  }
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+  let quoteChar = '';
+  for (let i = start; i < html.length; i += 1) {
+    const ch = html[i];
+    if (inString) {
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escapeNext = true;
+        continue;
+      }
+      if (ch === quoteChar) {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === '\'') {
+      inString = true;
+      quoteChar = ch;
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return html.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function collectImageUrls(value: unknown, maxDepth: number): string[] {
+  const results: string[] = [];
+  const visited = new WeakSet<object>();
+  const imageKeyHint = /image|images|imageList|pic|pics|photo|cover/i;
+  const imageFieldKeys = ['url', 'origin', 'originUrl', 'original', 'originalUrl', 'src', 'path', 'file'];
+
+  const pushUrl = (url?: string) => {
+    if (!url) {
+      return;
+    }
+    const normalized = normalizeMediaUrl(url);
+    if (normalized && isLikelyImageUrl(normalized)) {
+      results.push(normalized);
+    }
+  };
+
+  const extractFromValue = (node: unknown) => {
+    if (!node) {
+      return;
+    }
+    if (typeof node === 'string') {
+      pushUrl(node);
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        extractFromValue(item);
+      }
+      return;
+    }
+    if (typeof node === 'object') {
+      const record = node as Record<string, any>;
+      for (const key of imageFieldKeys) {
+        if (typeof record[key] === 'string') {
+          pushUrl(record[key]);
+        }
+      }
+      if (Array.isArray(record.url)) {
+        for (const url of record.url) {
+          if (typeof url === 'string') {
+            pushUrl(url);
+          }
+        }
+      }
+    }
+  };
+
+  const walk = (node: unknown, depth: number) => {
+    if (node == null || depth < 0) {
+      return;
+    }
+    if (typeof node === 'string') {
+      pushUrl(node);
+      return;
+    }
+    if (typeof node !== 'object') {
+      return;
+    }
+    if (visited.has(node as object)) {
+      return;
+    }
+    visited.add(node as object);
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        walk(item, depth - 1);
+      }
+      return;
+    }
+
+    const record = node as Record<string, unknown>;
+    for (const [key, child] of Object.entries(record)) {
+      if (imageKeyHint.test(key)) {
+        extractFromValue(child);
+      }
+      walk(child, depth - 1);
+    }
+  };
+
+  walk(value, maxDepth);
+  return results;
+}
+
+function isLikelyImageUrl(url: string): boolean {
+  const lowered = url.toLowerCase();
+  if (/\.(jpg|jpeg|png|webp|gif)(\?|#|$)/i.test(lowered)) {
+    return true;
   }
   try {
     const parsed = new URL(url);
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+    const host = parsed.hostname.toLowerCase();
+    if (host.includes('xhscdn.com') || host.includes('xiaohongshu.com')) {
+      const path = parsed.pathname.toLowerCase();
+      if (path.endsWith('.js') || path.endsWith('.css') || path.endsWith('.svg')) {
+        return false;
+      }
+      return true;
+    }
   } catch {
-    return url;
+    return false;
   }
+  return false;
+}
+
+function decodeUnicodeEscapes(value: string): string {
+  return value.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => {
+    const parsed = Number.parseInt(code, 16);
+    if (Number.isNaN(parsed)) {
+      return _;
+    }
+    return String.fromCharCode(parsed);
+  });
+}
+
+function deduplicateXhsImages(urls: string[]): string[] {
+  const seen = new Set<string>();
+  const results: string[] = [];
+  for (const url of urls) {
+    if (!url) {
+      continue;
+    }
+    const trimmed = url.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const key = trimmed.includes('xhscdn.com') && trimmed.includes('!')
+      ? trimmed.split('!')[0]
+      : trimmed;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    results.push(trimmed);
+  }
+  return results;
 }
 
 function escapeRegExp(value: string): string {

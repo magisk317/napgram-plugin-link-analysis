@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@napgram/sdk':
-        specifier: ^0.1.7
-        version: 0.1.7
+        specifier: ^0.1.9
+        version: 0.1.9
     devDependencies:
       '@types/node':
         specifier: ^25.0.3
@@ -24,11 +24,11 @@ packages:
   '@napgram/core@0.1.5':
     resolution: {integrity: sha512-X++i6HLe0ALkhxe2ehqJc5uwTqRBlTEEWluPiO4uG73Ai4wQAFU4bmZ27qjELZCLNdmqosGiaLOnHfgqWlDP/w==, tarball: https://npm.pkg.github.com/download/@napgram/core/0.1.5/4bc21ba19567f5b1fe8bb4e5634334f6efe69f76}
 
-  '@napgram/sdk@0.1.7':
-    resolution: {integrity: sha512-KqS4mY+LD6yfQQAhheTG9/Me+aKVw3yfGT0S8BXlLEJezPJOiTAcfbCZ/+RLfKwzNKlsgfFA4rIw5Q6ztfsaDQ==, tarball: https://npm.pkg.github.com/download/@napgram/sdk/0.1.7/f45fb4f27524df6dc5e27ad9494d1252f675013c}
+  '@napgram/sdk@0.1.9':
+    resolution: {integrity: sha512-B8xVmZsHoosVyGpm5cWcY8/4rboeeRcWhGbHvcA1dDOaFo5x0/8BSSSGBaZbOzxxk/lwdzB2BZnCveS+QphUeQ==, tarball: https://npm.pkg.github.com/download/@napgram/sdk/0.1.9/fd722e8eda21fb4754b51f2bb90b54122f0b586b}
 
-  '@napgram/utils@0.1.7':
-    resolution: {integrity: sha512-l37YmlaakvxMGsGiIUpGP5jroRDSnBLeSND9UE9drtr6+OpigCenrkdY9qMNJ79g8n3atPS++WdJ4OxB929gjw==, tarball: https://npm.pkg.github.com/download/@napgram/utils/0.1.7/9937ef0b95746b8b1abacd043ef52cc3f15571c1}
+  '@napgram/utils@0.1.9':
+    resolution: {integrity: sha512-rdxFmiBUyepHcgTwfxNqf99HlrwCWlrMsy/3SKdGnrlG0IjwkMiaVq4Ex8dDVPOXVsHbsaKRsSDS0p5XuBdrUQ==, tarball: https://npm.pkg.github.com/download/@napgram/utils/0.1.9/6cf84d7859a264ad514f87659ad41c816b068ff3}
 
   '@types/node@25.0.3':
     resolution: {integrity: sha512-W609buLVRVmeW693xKfzHeIV6nJGGz98uCPfeXI1ELMLXVeKYZ9m15fAMSaUPBHYLGFsVRcMmSCksQOrZV9BYA==}
@@ -45,12 +45,12 @@ snapshots:
 
   '@napgram/core@0.1.5': {}
 
-  '@napgram/sdk@0.1.7':
+  '@napgram/sdk@0.1.9':
     dependencies:
       '@napgram/core': 0.1.5
-      '@napgram/utils': 0.1.7
+      '@napgram/utils': 0.1.9
 
-  '@napgram/utils@0.1.7':
+  '@napgram/utils@0.1.9':
     dependencies:
       '@napgram/core': 0.1.5
 
