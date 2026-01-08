@@ -1,4 +1,8 @@
 import type { ForwardMessage, MessageSegment } from '@napgram/sdk';
+import { Buffer } from 'node:buffer';
+import { existsSync, promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 export type BiliVideo = {
   title: string;
@@ -7,6 +11,14 @@ export type BiliVideo = {
   url: string;
   upName?: string;
   stats?: BiliStats;
+  bvid?: string;
+  aid?: number;
+  cid?: number;
+  duration?: number;
+  pubDate?: number;
+  zoneName?: string;
+  play?: BiliMediaLink;
+  download?: BiliMediaLink;
 };
 
 export type BiliStats = {
@@ -16,6 +28,15 @@ export type BiliStats = {
   favorite?: number;
   share?: number;
   danmaku?: number;
+};
+
+export type BiliMediaLink = {
+  url: string;
+  backupUrls?: string[];
+  quality?: number;
+  format?: string;
+  size?: number;
+  length?: number;
 };
 
 export const BILI_DOMAINS = [
@@ -34,6 +55,8 @@ const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 const MAX_URL_LENGTH = 2048;
 const MAX_CONTENT_LENGTH = 260;
+const MAX_AUTO_DOWNLOAD_DURATION_SECONDS = 10 * 60;
+const PLAYURL_DEFAULT_QN = 64;
 const SAFE_PROTOCOLS = new Set(['http:', 'https:']);
 const PRIVATE_IP_REGEX = /^(10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)/;
 const PRIVATE_HOSTNAME_SUFFIXES = ['.local', '.internal'];
@@ -42,7 +65,16 @@ const DOMAIN_EXTRACT_PATTERN = new RegExp(
   `\\b(?:${BILI_DOMAINS.map((domain) => escapeRegExp(domain)).join('|')})[^\\s]*`,
   'gi'
 );
-const TRAILING_PUNCTUATION_PATTERN = /[)\]\}>"'!?.,]+$/u;
+const TRAILING_PUNCTUATION_PATTERN = /[)\]\}>"'。！？!?！，,。.]+$/u;
+const HTML_ENTITY_REGEX = /&(#x?[0-9a-f]+|\w+);/gi;
+const HTML_ENTITY_MAP: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
 
 export function extractBiliUrlsFromText(text: string): string[] {
   const candidates = extractCandidateUrls(text);
@@ -58,13 +90,13 @@ export function extractBiliUrlsFromText(text: string): string[] {
 
 export function extractBiliIdsFromText(text: string): Array<{ idType: 'bv' | 'av'; id: string }> {
   const results: Array<{ idType: 'bv' | 'av'; id: string }> = [];
-  const bvPattern = /(?:^|\s)(bv[0-9a-zA-Z]{10})(?:\s|$)/gi;
-  const avPattern = /(?:^|\s)(av\d+)(?:\s|$)/gi;
+  const bvPattern = /\b(BV[0-9a-zA-Z]{10})\b/gi;
+  const avPattern = /\b(AV\d+)\b/gi;
   let match: RegExpExecArray | null;
 
   while ((match = bvPattern.exec(text)) !== null) {
     const raw = match[1];
-    const id = raw.startsWith('BV') ? raw : `BV${raw.slice(2)}`;
+    const id = `BV${raw.slice(2)}`;
     results.push({ idType: 'bv', id });
   }
 
@@ -119,6 +151,12 @@ export async function fetchBiliVideoFromId(idType: 'bv' | 'av', id: string): Pro
   const info = payload.data;
   const bvid = typeof info.bvid === 'string' ? info.bvid : '';
   const aid = typeof info.aid === 'number' ? info.aid : null;
+  const cid =
+    typeof info.cid === 'number'
+      ? info.cid
+      : Array.isArray(info.pages) && typeof info.pages[0]?.cid === 'number'
+        ? info.pages[0].cid
+        : null;
   const fallbackUrl =
     idType === 'bv' ? `https://www.bilibili.com/video/${id}` : `https://www.bilibili.com/video/av${id}`;
   const url = bvid
@@ -127,13 +165,23 @@ export async function fetchBiliVideoFromId(idType: 'bv' | 'av', id: string): Pro
       ? `https://www.bilibili.com/video/av${aid}`
       : fallbackUrl;
   const stat = info.stat ?? {};
+  const duration = typeof info.duration === 'number' ? info.duration : undefined;
+  const pubDate = typeof info.pubdate === 'number' ? info.pubdate : undefined;
+  const zoneName = typeof info.tname === 'string' ? info.tname : undefined;
 
-  return {
+  const fallbackAid = idType === 'av' && /^\d+$/.test(id) ? Number(id) : undefined;
+  const video: BiliVideo = {
     title: typeof info.title === 'string' ? info.title : '',
     description: typeof info.desc === 'string' ? info.desc : '',
     coverImage: typeof info.pic === 'string' ? info.pic : undefined,
     url,
     upName: typeof info.owner?.name === 'string' ? info.owner.name : undefined,
+    bvid: bvid || (idType === 'bv' ? id : undefined),
+    aid: aid ?? fallbackAid,
+    cid: cid ?? undefined,
+    duration,
+    pubDate,
+    zoneName,
     stats: {
       view: typeof stat.view === 'number' ? stat.view : undefined,
       like: typeof stat.like === 'number' ? stat.like : undefined,
@@ -143,23 +191,57 @@ export async function fetchBiliVideoFromId(idType: 'bv' | 'av', id: string): Pro
       danmaku: typeof stat.danmaku === 'number' ? stat.danmaku : undefined,
     },
   };
+
+  if (cid && bvid) {
+    try {
+      const playInfo = await fetchBiliPlayInfo(bvid, cid);
+      if (playInfo) {
+        video.play = playInfo;
+        video.download = resolveDownloadInfo(playInfo);
+      }
+    } catch {
+      // Ignore playurl failures to avoid breaking basic metadata parsing.
+    }
+  }
+
+  return video;
 }
 
-export function buildForwardMessagesForBili(video: BiliVideo, senderId: string): ForwardMessage[] {
-  const text = formatBiliText(video);
-  const messages: ForwardMessage[] = [
-    {
-      userId: senderId,
-      userName: 'B站解析',
-      segments: [{ type: 'text', data: { text } } as MessageSegment],
-    },
-  ];
-
+export async function buildForwardMessagesForBili(
+  video: BiliVideo,
+  senderId: string,
+): Promise<ForwardMessage[]> {
+  const messages: ForwardMessage[] = [];
   if (video.coverImage) {
     messages.push({
       userId: senderId,
       userName: 'B站解析',
       segments: [{ type: 'image', data: { url: video.coverImage } } as MessageSegment],
+    });
+  }
+
+  const text = formatBiliText(video);
+  messages.push({
+    userId: senderId,
+    userName: 'B站解析',
+    segments: [{ type: 'text', data: { text } } as MessageSegment],
+  });
+
+  const downloadedVideo = await maybeDownloadBiliVideo(video);
+  if (downloadedVideo) {
+    messages.push({
+      userId: senderId,
+      userName: 'B站解析',
+      segments: [{ type: 'video', data: { file: downloadedVideo } } as MessageSegment],
+    });
+  }
+
+  const linkText = formatBiliMediaLinks(video);
+  if (linkText) {
+    messages.push({
+      userId: senderId,
+      userName: 'B站解析',
+      segments: [{ type: 'text', data: { text: linkText } } as MessageSegment],
     });
   }
 
@@ -270,7 +352,7 @@ function sanitizeExtractedUrl(raw: string): string | null {
     return null;
   }
 
-  return trimmed;
+  return decodeHtmlEntities(trimmed);
 }
 
 async function resolveBiliShortUrl(url: string): Promise<string | null> {
@@ -315,12 +397,20 @@ function extractBiliIdFromUrl(url: string): { type: 'bv' | 'av'; id: string } | 
     const path = parsed.pathname || '';
     const bvMatch = path.match(/\/video\/(BV[0-9a-zA-Z]{10})/i);
     if (bvMatch?.[1]) {
-      const id = bvMatch[1].startsWith('BV') ? bvMatch[1] : `BV${bvMatch[1].slice(2)}`;
+      const id = `BV${bvMatch[1].slice(2)}`;
       return { type: 'bv', id };
     }
     const avMatch = path.match(/\/video\/av(\d+)/i);
     if (avMatch?.[1]) {
       return { type: 'av', id: avMatch[1] };
+    }
+    const bvParam = parsed.searchParams.get('bvid') || parsed.searchParams.get('bv');
+    if (bvParam && /^BV[0-9a-zA-Z]{10}$/i.test(bvParam)) {
+      return { type: 'bv', id: `BV${bvParam.slice(2)}` };
+    }
+    const avParam = parsed.searchParams.get('aid') || parsed.searchParams.get('av');
+    if (avParam && /^\d+$/.test(avParam)) {
+      return { type: 'av', id: avParam };
     }
   } catch {
     return null;
@@ -342,8 +432,18 @@ function formatBiliText(video: BiliVideo): string {
   const title = video.title.trim();
   segments.push(`标题：${title || '未能获取标题'}`);
 
+  const ids = formatBiliIds(video);
+  if (ids) {
+    segments.push(ids);
+  }
+
   if (video.upName) {
     segments.push(`UP主：${video.upName}`);
+  }
+
+  const detail = formatBiliDetail(video);
+  if (detail) {
+    segments.push(detail);
   }
 
   const description = truncateText(video.description, MAX_CONTENT_LENGTH);
@@ -358,6 +458,51 @@ function formatBiliText(video: BiliVideo): string {
 
   segments.push(`链接：${simplifyUrl(video.url)}`);
   return segments.join('\n\n');
+}
+
+function formatBiliMediaLinks(video: BiliVideo): string {
+  const parts: string[] = [];
+  if (video.play?.url) {
+    parts.push(`播放直链：${video.play.url}`);
+  }
+  if (video.download?.url && video.download.url !== video.play?.url) {
+    parts.push(`下载链接：${video.download.url}`);
+  }
+  if (!parts.length) {
+    return '';
+  }
+  return parts.join('\n\n');
+}
+
+function formatBiliIds(video: BiliVideo): string {
+  const parts: string[] = [];
+  if (video.bvid) {
+    parts.push(video.bvid);
+  }
+  if (typeof video.aid === 'number') {
+    parts.push(`av${video.aid}`);
+  }
+  if (!parts.length) {
+    return '';
+  }
+  return `编号：${parts.join(' / ')}`;
+}
+
+function formatBiliDetail(video: BiliVideo): string {
+  const parts: string[] = [];
+  if (typeof video.duration === 'number') {
+    parts.push(`时长 ${formatDuration(video.duration)}`);
+  }
+  if (typeof video.pubDate === 'number') {
+    parts.push(`发布 ${formatDate(video.pubDate)}`);
+  }
+  if (video.zoneName) {
+    parts.push(`分区 ${video.zoneName}`);
+  }
+  if (!parts.length) {
+    return '';
+  }
+  return `信息：${parts.join(' / ')}`;
 }
 
 function formatBiliStats(stats?: BiliStats): string {
@@ -404,6 +549,26 @@ function formatCountUnit(value: number): string {
   return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed;
 }
 
+function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const remainSeconds = total % 60;
+  if (hours > 0) {
+    return `${hours}:${pad2(minutes)}:${pad2(remainSeconds)}`;
+  }
+  return `${minutes}:${pad2(remainSeconds)}`;
+}
+
+function formatDate(timestamp: number): string {
+  const date = new Date(timestamp * 1000);
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function pad2(value: number): string {
+  return value < 10 ? `0${value}` : value.toString();
+}
+
 function truncateText(value: string, maxLength: number): string {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -429,6 +594,289 @@ function simplifyUrl(url: string): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function decodeHtmlEntities(value: string): string {
+  if (!value || !value.includes('&')) {
+    return value;
+  }
+
+  return value.replace(HTML_ENTITY_REGEX, (match, entity) => {
+    if (!entity) {
+      return match;
+    }
+
+    if (entity[0] === '#') {
+      const isHex = entity[1]?.toLowerCase() === 'x';
+      const numericSlice = isHex ? entity.slice(2) : entity.slice(1);
+      const codePoint = parseInt(numericSlice, isHex ? 16 : 10);
+      if (!Number.isNaN(codePoint)) {
+        try {
+          return String.fromCodePoint(codePoint);
+        } catch {
+          return match;
+        }
+      }
+      return match;
+    }
+
+    const mapped = HTML_ENTITY_MAP[entity.toLowerCase()];
+    return mapped ?? match;
+  });
+}
+
+async function maybeDownloadBiliVideo(video: BiliVideo): Promise<string | null> {
+  if (typeof video.duration !== 'number' || video.duration > MAX_AUTO_DOWNLOAD_DURATION_SECONDS) {
+    return null;
+  }
+  const url = video.download?.url || video.play?.url;
+  if (!url) {
+    return null;
+  }
+  const fileName = buildBiliVideoFileName(video);
+  return downloadBiliFile(url, fileName, video.play?.format);
+}
+
+function buildBiliVideoFileName(video: BiliVideo): string {
+  const id = video.bvid || (typeof video.aid === 'number' ? `av${video.aid}` : 'video');
+  return `bili-${id}-${Date.now()}`;
+}
+
+async function downloadBiliFile(
+  url: string,
+  fileName: string,
+  format?: string,
+): Promise<string | null> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        'User-Agent': DEFAULT_USER_AGENT,
+        Referer: 'https://www.bilibili.com/',
+      },
+      redirect: 'follow',
+    });
+  } catch {
+    return null;
+  }
+
+  if (!response.ok) {
+    return null;
+  }
+
+  let buffer: Buffer;
+  try {
+    const data = await response.arrayBuffer();
+    buffer = Buffer.from(data);
+  } catch {
+    return null;
+  }
+
+  const contentType = response.headers.get('content-type') || undefined;
+  const contentDisposition = response.headers.get('content-disposition') || undefined;
+  const inferredExt = inferVideoExtension({
+    url,
+    contentType,
+    contentDisposition,
+    buffer,
+    format,
+  });
+  const filePath = await writeBufferToSharedPath(buffer, `${fileName}${inferredExt}`);
+  return filePath;
+}
+
+function inferVideoExtension(options: {
+  url: string;
+  contentType?: string;
+  contentDisposition?: string;
+  buffer: Buffer;
+  format?: string;
+}): string {
+  const fromDisposition = inferExtFromContentDisposition(options.contentDisposition);
+  if (fromDisposition) {
+    return fromDisposition;
+  }
+  const fromUrl = inferExtFromUrl(options.url);
+  if (fromUrl) {
+    return fromUrl;
+  }
+  const fromMime = inferExtFromMime(options.contentType);
+  if (fromMime) {
+    return fromMime;
+  }
+  const fromMagic = inferExtFromMagic(options.buffer);
+  if (fromMagic) {
+    return fromMagic;
+  }
+  const fromFormat = inferExtFromFormat(options.format);
+  if (fromFormat) {
+    return fromFormat;
+  }
+  return '';
+}
+
+function inferExtFromContentDisposition(value?: string): string {
+  if (!value) {
+    return '';
+  }
+  const match = value.match(/filename\*?=(?:UTF-8''|")?([^";\n]+)(?:\"|;|$)/i);
+  if (!match?.[1]) {
+    return '';
+  }
+  try {
+    const decoded = decodeURIComponent(match[1].trim());
+    return normalizeExt(path.extname(decoded));
+  } catch {
+    return '';
+  }
+}
+
+function inferExtFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return normalizeExt(path.extname(parsed.pathname));
+  } catch {
+    return '';
+  }
+}
+
+function inferExtFromMime(contentType?: string): string {
+  if (!contentType) {
+    return '';
+  }
+  const normalized = contentType.split(';')[0]?.trim().toLowerCase();
+  if (!normalized) {
+    return '';
+  }
+  const map: Record<string, string> = {
+    'video/mp4': '.mp4',
+    'video/x-flv': '.flv',
+    'video/flv': '.flv',
+    'video/webm': '.webm',
+    'video/ogg': '.ogv',
+    'video/quicktime': '.mov',
+  };
+  if (map[normalized]) {
+    return map[normalized];
+  }
+  if (normalized.startsWith('video/')) {
+    const subtype = normalized.slice('video/'.length);
+    if (/^[a-z0-9.+-]+$/i.test(subtype)) {
+      return `.${subtype}`;
+    }
+  }
+  return '';
+}
+
+function inferExtFromMagic(buffer: Buffer): string {
+  if (buffer.length >= 12) {
+    if (buffer.slice(4, 8).toString('ascii') === 'ftyp') {
+      return '.mp4';
+    }
+    if (buffer.slice(0, 3).toString('ascii') === 'FLV') {
+      return '.flv';
+    }
+    if (buffer.slice(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) {
+      const hint = buffer.slice(0, 64).toString('utf8').toLowerCase();
+      if (hint.includes('webm')) {
+        return '.webm';
+      }
+      return '.mkv';
+    }
+  }
+  return '';
+}
+
+function inferExtFromFormat(format?: string): string {
+  if (!format) {
+    return '';
+  }
+  const normalized = format.toLowerCase();
+  if (normalized.includes('mp4')) {
+    return '.mp4';
+  }
+  if (normalized.includes('flv')) {
+    return '.flv';
+  }
+  if (normalized.includes('webm')) {
+    return '.webm';
+  }
+  return '';
+}
+
+function normalizeExt(ext: string): string {
+  if (!ext) {
+    return '';
+  }
+  return ext.startsWith('.') ? ext : `.${ext}`;
+}
+
+async function writeBufferToSharedPath(buffer: Buffer, fileName: string): Promise<string | null> {
+  const sharedRoot = '/app/.config/QQ';
+  const napcatTempDir = path.join(sharedRoot, 'NapCat', 'temp');
+  const sharedDir = path.join(sharedRoot, 'temp_napgram_share');
+  const candidateDirs = existsSync(sharedRoot)
+    ? [napcatTempDir, sharedDir]
+    : [];
+  candidateDirs.push(os.tmpdir());
+
+  for (const dir of candidateDirs) {
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      const filePath = path.join(dir, fileName);
+      await fs.writeFile(filePath, buffer);
+      return filePath;
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+async function fetchBiliPlayInfo(bvid: string, cid: number): Promise<BiliMediaLink | null> {
+  const params = new URLSearchParams({
+    bvid,
+    cid: String(cid),
+    qn: String(PLAYURL_DEFAULT_QN),
+    fnval: '0',
+    fourk: '1',
+  });
+  const apiUrl = `https://api.bilibili.com/x/player/playurl?${params.toString()}`;
+  const data = await fetchJson(apiUrl);
+  if (!data || typeof data !== 'object') {
+    return null;
+  }
+
+  const payload = data as { code?: number; data?: Record<string, any> };
+  if (payload.code !== 0 || !payload.data) {
+    return null;
+  }
+
+  const info = payload.data;
+  const durl = Array.isArray(info.durl) ? info.durl[0] : null;
+  if (!durl || typeof durl.url !== 'string') {
+    return null;
+  }
+
+  return {
+    url: durl.url,
+    backupUrls: Array.isArray(durl.backup_url) ? durl.backup_url : undefined,
+    quality: typeof info.quality === 'number' ? info.quality : undefined,
+    format: typeof info.format === 'string' ? info.format : undefined,
+    size: typeof durl.size === 'number' ? durl.size : undefined,
+    length: typeof durl.length === 'number' ? durl.length : undefined,
+  };
+}
+
+function resolveDownloadInfo(play: BiliMediaLink): BiliMediaLink {
+  if (play.backupUrls && play.backupUrls.length) {
+    return {
+      ...play,
+      url: play.backupUrls[0],
+    };
+  }
+  return play;
 }
 
 async function fetchJson(url: string): Promise<unknown> {

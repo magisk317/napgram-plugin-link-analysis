@@ -173,7 +173,7 @@ const plugin = definePlugin({
             if (canonicalUrl) {
               seenCanonical.add(canonicalUrl);
             }
-            forwardMessages.push(...buildForwardMessagesForBili(video, event.sender.userId));
+            forwardMessages.push(...await buildForwardMessagesForBili(video, event.sender.userId));
             recentlyParsed.set(cacheKey, now);
             if (video.url && target.kind === 'bili' && video.url !== target.url) {
               recentlyParsed.set(getCacheKey({ kind: 'bili', url: video.url }), now);
