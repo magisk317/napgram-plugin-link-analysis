@@ -87,8 +87,7 @@ const out = {
           entry: { type: 'file', path: String(meta.entry || 'dist/index.mjs') },
           dist: zip ? { type: 'zip', url: buildUrl(zip), sha256: await readSha(zip) }
             : tgz ? { type: 'tgz', url: buildUrl(tgz), sha256: await readSha(tgz) }
-              : { type: 'zip', url: 'https://YOUR_HOST/FILE.zip', sha256: '...sha256...' },
-          permissions: meta.permissions || { network: [], fs: [], instances: [0] }
+              : { type: 'zip', url: 'https://YOUR_HOST/FILE.zip', sha256: '...sha256...' }
         }
       ]
     }

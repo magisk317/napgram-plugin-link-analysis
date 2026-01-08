@@ -49,17 +49,6 @@ if (!isNonEmptyString(pkg.version)) {
   errors.push('package.json: version is required');
 }
 
-const permissions = meta.permissions || {};
-if (!Array.isArray(permissions.instances)) {
-  errors.push('napgram-plugin.json: permissions.instances must be an array');
-}
-if (!Array.isArray(permissions.network)) {
-  errors.push('napgram-plugin.json: permissions.network must be an array');
-}
-if (!Array.isArray(permissions.fs)) {
-  errors.push('napgram-plugin.json: permissions.fs must be an array');
-}
-
 if (errors.length > 0) {
   const message = errors.join('\n');
   console.error(message);

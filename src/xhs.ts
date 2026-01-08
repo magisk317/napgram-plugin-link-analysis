@@ -19,6 +19,10 @@ const SAFE_PROTOCOLS = new Set(['http:', 'https:']);
 const PRIVATE_IP_REGEX = /^(10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)/;
 const PRIVATE_HOSTNAME_SUFFIXES = ['.local', '.internal'];
 const URL_EXTRACT_PATTERN = /https?:\/\/[^\s]+/gi;
+const DOMAIN_EXTRACT_PATTERN = new RegExp(
+  `\\b(?:${XHS_DOMAINS.map((domain) => escapeRegExp(domain)).join('|')})[^\\s]*`,
+  'gi'
+);
 const TRAILING_PUNCTUATION_PATTERN = /[)\]\}>"'!?.,]+$/u;
 const HTML_ENTITY_REGEX = /&(#x?[0-9a-f]+|\w+);/gi;
 const HTML_ENTITY_MAP: Record<string, string> = {
@@ -153,14 +157,18 @@ function isPrivateHostname(hostname: string): boolean {
 }
 
 function extractCandidateUrls(text: string): string[] {
-  const matches = text.match(URL_EXTRACT_PATTERN);
-  if (!matches) {
-    return [];
+  const results = new Set<string>();
+  const matches = text.match(URL_EXTRACT_PATTERN) ?? [];
+  const domainMatches = text.match(DOMAIN_EXTRACT_PATTERN) ?? [];
+
+  for (const raw of [...matches, ...domainMatches]) {
+    const sanitized = sanitizeExtractedUrl(raw);
+    if (sanitized) {
+      results.add(sanitized);
+    }
   }
 
-  return matches
-    .map((raw) => sanitizeExtractedUrl(raw))
-    .filter((value): value is string => Boolean(value));
+  return Array.from(results);
 }
 
 function sanitizeExtractedUrl(raw: string): string | null {

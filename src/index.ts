@@ -1,12 +1,15 @@
-import { definePlugin, type ForwardMessage } from '@napgram/sdk';
 import {
-  XHS_DOMAINS,
+  definePlugin,
+  type ForwardMessage,
+  type MessageSegment,
+  prepareForwardMessagesForQQ,
+} from '@napgram/sdk';
+import {
   extractXhsUrlsFromText,
   fetchXhsNote,
   buildForwardMessagesForXhs,
 } from './xhs';
 import {
-  BILI_DOMAINS,
   extractBiliUrlsFromText,
   extractBiliIdsFromText,
   fetchBiliVideoFromUrl,
@@ -20,9 +23,6 @@ type LinkTarget =
   | { kind: 'bili-id'; idType: 'bv' | 'av'; id: string };
 
 const MAX_URLS = 5;
-const NETWORK_ALLOWLIST = Array.from(
-  new Set([...XHS_DOMAINS, ...BILI_DOMAINS, 'api.bilibili.com'])
-) as string[];
 
 // 内存缓存：存储最近解析的链接和时间戳
 const recentlyParsed = new Map<string, number>();
@@ -34,10 +34,6 @@ const plugin = definePlugin({
   version: '0.1.0',
   author: 'NapLink',
   description: 'Parse Xiaohongshu and Bilibili share links and render a quick preview.',
-  permissions: {
-    instances: [0],
-    network: NETWORK_ALLOWLIST,
-  },
   async install(ctx) {
     ctx.logger.info('Link analysis plugin installed');
 
@@ -52,7 +48,7 @@ const plugin = definePlugin({
     }, 30 * 1000); // 每30秒清理一次
 
     ctx.on('message', async (event) => {
-      const text = extractText(event.message.text, event.message.segments);
+      const text = extractText(event.message.text, event.message.segments, event.raw);
       if (!text) {
         return;
       }
@@ -115,7 +111,7 @@ const plugin = definePlugin({
         return;
       }
 
-      await event.reply([{ type: 'forward', data: { messages: forwardMessages } }]);
+      await sendForwardPreview(ctx, event, forwardMessages);
     });
 
     ctx.onUnload(() => {
@@ -135,21 +131,113 @@ function getCacheKey(target: LinkTarget): string {
 }
 
 
-function extractText(rawText?: string, segments?: Array<any>): string {
-  if (rawText && rawText.trim()) {
-    return rawText.trim();
+const LINK_HINT_REGEX = /(https?:\/\/|www\.|xhslink\.com|xiaohongshu\.com|b23\.tv|bilibili\.com|bv[0-9a-z]{8,}|av\d{6,})/i;
+const MAX_CANDIDATE_TEXTS = 80;
+const MAX_RAW_DEPTH = 4;
+
+function extractText(rawText?: string, segments?: Array<any>, rawEvent?: any): string {
+  const pieces = new Set<string>();
+  const addPiece = (value?: string) => {
+    if (!value) {
+      return;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+    pieces.add(trimmed);
+  };
+
+  addPiece(rawText);
+
+  if (Array.isArray(segments)) {
+    for (const segment of segments) {
+      if (!segment) {
+        continue;
+      }
+      if (segment.type === 'text' && typeof segment.data?.text === 'string') {
+        addPiece(segment.data.text);
+        continue;
+      }
+      for (const candidate of collectCandidateStrings(segment.data, 2)) {
+        addPiece(candidate);
+      }
+    }
   }
 
-  if (!Array.isArray(segments)) {
-    return '';
+  const rawPayload = rawEvent?.metadata?.raw ?? rawEvent?.raw ?? rawEvent;
+  for (const candidate of collectCandidateStrings(rawPayload, MAX_RAW_DEPTH)) {
+    addPiece(candidate);
   }
 
-  const pieces = segments
-    .filter((segment) => segment?.type === 'text' && typeof segment.data?.text === 'string')
-    .map((segment) => segment.data.text.trim())
-    .filter(Boolean);
+  return Array.from(pieces).join(' ');
+}
 
-  return pieces.join(' ');
+function collectCandidateStrings(value: unknown, maxDepth: number): string[] {
+  const results: string[] = [];
+  const visited = new WeakSet<object>();
+
+  const pushCandidate = (text: string) => {
+    if (!text) {
+      return;
+    }
+    if (!LINK_HINT_REGEX.test(text)) {
+      return;
+    }
+    results.push(text);
+  };
+
+  const walk = (node: unknown, depth: number) => {
+    if (results.length >= MAX_CANDIDATE_TEXTS) {
+      return;
+    }
+    if (node == null) {
+      return;
+    }
+    if (typeof node === 'string') {
+      pushCandidate(node);
+      return;
+    }
+    if (typeof node !== 'object') {
+      return;
+    }
+    if (visited.has(node as object)) {
+      return;
+    }
+    visited.add(node as object);
+
+    if (Array.isArray(node)) {
+      if (depth <= 0) {
+        return;
+      }
+      for (const item of node) {
+        walk(item, depth - 1);
+        if (results.length >= MAX_CANDIDATE_TEXTS) {
+          return;
+        }
+      }
+      return;
+    }
+
+    if (depth <= 0) {
+      return;
+    }
+    const record = node as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      const value = record[key];
+      if (typeof value === 'string') {
+        pushCandidate(value);
+      } else {
+        walk(value, depth - 1);
+      }
+      if (results.length >= MAX_CANDIDATE_TEXTS) {
+        return;
+      }
+    }
+  };
+
+  walk(value, maxDepth);
+  return results;
 }
 
 function extractLinkTargets(text: string): LinkTarget[] {
@@ -194,4 +282,38 @@ function formatError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function resolvePlatform(event: any): 'qq' | 'tg' {
+  return event?.platform === 'tg' || event?.platform === 'telegram' ? 'tg' : 'qq';
+}
+
+function resolveChannelId(event: any): string {
+  const platform = resolvePlatform(event);
+  if (platform === 'qq') {
+    const channelType = event?.channelType === 'private' ? 'private' : 'group';
+    return `qq:${channelType}:${event.channelId}`;
+  }
+  return `tg:${event.channelId}`;
+}
+
+async function sendForwardPreview(ctx: any, event: any, messages: ForwardMessage[]): Promise<void> {
+  if (!messages.length) {
+    return;
+  }
+
+  const platform = resolvePlatform(event);
+  const preparedMessages =
+    platform === 'qq' ? await prepareForwardMessagesForQQ(messages) : messages;
+  const channelId = resolveChannelId(event);
+  const segments: MessageSegment[] = [
+    { type: 'forward', data: { messages: preparedMessages } } as MessageSegment
+  ];
+
+  await ctx.message.send({
+    instanceId: event.instanceId,
+    channelId,
+    threadId: event.threadId ?? undefined,
+    content: segments,
+  });
 }

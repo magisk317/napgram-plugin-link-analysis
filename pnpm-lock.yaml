@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@napgram/sdk':
-        specifier: ^0.1.3
-        version: 0.1.3
+        specifier: ^0.1.7
+        version: 0.1.7
     devDependencies:
       '@types/node':
         specifier: ^25.0.3
@@ -21,14 +21,14 @@ importers:
 
 packages:
 
-  '@napgram/core@0.1.3':
-    resolution: {integrity: sha512-YQD6Fh4flTNtRRnZU8RhLqYBxnBtLCgWEoy4CTiI3FZExWa9+Th78e7hIvwHK7F0SyUH/Vxu3DrwNrRldD6zRQ==}
+  '@napgram/core@0.1.5':
+    resolution: {integrity: sha512-X++i6HLe0ALkhxe2ehqJc5uwTqRBlTEEWluPiO4uG73Ai4wQAFU4bmZ27qjELZCLNdmqosGiaLOnHfgqWlDP/w==, tarball: https://npm.pkg.github.com/download/@napgram/core/0.1.5/4bc21ba19567f5b1fe8bb4e5634334f6efe69f76}
 
-  '@napgram/sdk@0.1.3':
-    resolution: {integrity: sha512-rRE/BzoSbonFC8/2nA75Zz0ytjQukJiBbI2alje4waguz00y3Y8WtwOKwetkL1+YQqK8Gw56zjAi6OOVOSSPWQ==}
+  '@napgram/sdk@0.1.7':
+    resolution: {integrity: sha512-KqS4mY+LD6yfQQAhheTG9/Me+aKVw3yfGT0S8BXlLEJezPJOiTAcfbCZ/+RLfKwzNKlsgfFA4rIw5Q6ztfsaDQ==, tarball: https://npm.pkg.github.com/download/@napgram/sdk/0.1.7/f45fb4f27524df6dc5e27ad9494d1252f675013c}
 
-  '@napgram/utils@0.1.3':
-    resolution: {integrity: sha512-26oNeyvV5OLujOlxGSwZ4k3D7Pim2nZs35lrwA9igcxeznDLQatmICnlGneIIIDmfV/QApV9enXmGChrHqlIYA==}
+  '@napgram/utils@0.1.7':
+    resolution: {integrity: sha512-l37YmlaakvxMGsGiIUpGP5jroRDSnBLeSND9UE9drtr6+OpigCenrkdY9qMNJ79g8n3atPS++WdJ4OxB929gjw==, tarball: https://npm.pkg.github.com/download/@napgram/utils/0.1.7/9937ef0b95746b8b1abacd043ef52cc3f15571c1}
 
   '@types/node@25.0.3':
     resolution: {integrity: sha512-W609buLVRVmeW693xKfzHeIV6nJGGz98uCPfeXI1ELMLXVeKYZ9m15fAMSaUPBHYLGFsVRcMmSCksQOrZV9BYA==}
@@ -43,16 +43,16 @@ packages:
 
 snapshots:
 
-  '@napgram/core@0.1.3': {}
+  '@napgram/core@0.1.5': {}
 
-  '@napgram/sdk@0.1.3':
+  '@napgram/sdk@0.1.7':
     dependencies:
-      '@napgram/core': 0.1.3
-      '@napgram/utils': 0.1.3
+      '@napgram/core': 0.1.5
+      '@napgram/utils': 0.1.7
 
-  '@napgram/utils@0.1.3':
+  '@napgram/utils@0.1.7':
     dependencies:
-      '@napgram/core': 0.1.3
+      '@napgram/core': 0.1.5
 
   '@types/node@25.0.3':
     dependencies:
