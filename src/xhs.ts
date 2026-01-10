@@ -258,6 +258,7 @@ function parseXhsNote(html: string, url: string): XhsNote {
     extractMeta(html, 'og:image:secure_url') ||
     extractMeta(html, 'image') ||
     '';
+  const normalizedCover = metaCover ? normalizeMediaUrl(metaCover) : null;
 
   const note: XhsNote = {
     title: '',
@@ -301,14 +302,14 @@ function parseXhsNote(html: string, url: string): XhsNote {
     note.content = metaDescription.trim();
   }
 
-  if (!note.images.length && metaCover) {
-    note.images.push(metaCover.trim());
+  if (!note.images.length && normalizedCover) {
+    note.images.push(normalizedCover);
   }
 
   note.title = note.title.trim() || '未能获取标题';
   note.content = note.content.trim();
   note.images = deduplicateXhsImages(note.images);
-  note.coverImage = note.images[0] || metaCover.trim() || undefined;
+  note.coverImage = note.images[0] || normalizedCover || undefined;
 
   return note;
 }
@@ -826,14 +827,18 @@ function deduplicateXhsImages(urls: string[]): string[] {
     if (!trimmed) {
       continue;
     }
-    const key = trimmed.includes('xhscdn.com') && trimmed.includes('!')
-      ? trimmed.split('!')[0]
-      : trimmed;
+    const normalized = normalizeMediaUrl(trimmed);
+    if (!normalized) {
+      continue;
+    }
+    const key = normalized.includes('xhscdn.com') && normalized.includes('!')
+      ? normalized.split('!')[0]
+      : normalized;
     if (seen.has(key)) {
       continue;
     }
     seen.add(key);
-    results.push(trimmed);
+    results.push(normalized);
   }
   return results;
 }

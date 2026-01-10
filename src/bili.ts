@@ -391,7 +391,7 @@ async function resolveBiliShortUrl(url: string): Promise<string | null> {
   throw lastError instanceof Error ? lastError : new Error('short url resolve failed');
 }
 
-function extractBiliIdFromUrl(url: string): { type: 'bv' | 'av'; id: string } | null {
+export function extractBiliIdFromUrl(url: string): { type: 'bv' | 'av'; id: string } | null {
   try {
     const parsed = new URL(url);
     const path = parsed.pathname || '';

@@ -18,6 +18,8 @@ import {
   fetchBiliVideoFromUrl,
   fetchBiliVideoFromId,
   buildForwardMessagesForBili,
+  extractBiliIdFromUrl,
+  type BiliVideo,
 } from './bili';
 import { defaultConfig, type LinkAnalysisConfig } from './config';
 
@@ -94,34 +96,35 @@ const plugin = definePlugin({
       }
 
       const uniqueTargets = deduplicateLinkTargets(targets).slice(0, MAX_URLS);
-      
+
       // 过滤掉最近1分钟内已解析的链接
       const now = Date.now();
       const targetsToProcess = uniqueTargets.filter((target) => {
-        const cacheKey = getCacheKey(target);
-        const lastParsed = recentlyParsed.get(cacheKey);
-        if (lastParsed && now - lastParsed < CACHE_DURATION_MS) {
-          logger.debug(`Skipping recently parsed link: ${cacheKey}`);
+        const cacheKeys = getCacheKeys(target);
+        if (isRecentlyParsed(cacheKeys, now)) {
+          logger.info(`链接去重：跳过最近已解析的链接 ${cacheKeys[0] ?? 'unknown'}`);
           return false;
         }
         return true;
       });
 
       if (!targetsToProcess.length) {
-        logger.debug('All links were recently parsed, skipping');
+        logger.info('链接去重：所有链接都在1分钟内已解析过，跳过处理');
         return;
+      }
+
+      // 立即标记所有要处理的链接，防止并发消息重复处理
+      for (const target of targetsToProcess) {
+        const cacheKeys = getCacheKeys(target);
+        markRecentlyParsed(cacheKeys, now);
+        logger.info(`链接去重：标记链接为已处理 ${cacheKeys[0] ?? 'unknown'}`);
       }
 
       const forwardMessages: ForwardMessage[] = [];
       const seenCanonical = new Set<string>();
 
       for (const target of targetsToProcess) {
-        const cacheKey = getCacheKey(target);
-        if (recentlyParsed.has(cacheKey)) {
-          logger.debug(`Skipping already parsed link in current batch: ${cacheKey}`);
-          continue;
-        }
-        
+
         if (target.kind === 'xhs') {
           try {
             const targetId = extractXhsNoteId(target.url);
@@ -135,9 +138,9 @@ const plugin = definePlugin({
             }
             const dedupKey = targetId ? `xhs:${targetId}` : canonicalizeUrlForDedup(note.url || target.url);
             if (dedupKey && seenCanonical.has(dedupKey)) {
-              recentlyParsed.set(cacheKey, now);
+              // 当前批次内去重，标记实际获取到的URL
               if (note.url && note.url !== target.url) {
-                recentlyParsed.set(getCacheKey({ kind: 'xhs', url: note.url }), now);
+                markRecentlyParsed(getCacheKeys({ kind: 'xhs', url: note.url }), now);
               }
               continue;
             }
@@ -145,9 +148,9 @@ const plugin = definePlugin({
               seenCanonical.add(dedupKey);
             }
             forwardMessages.push(...buildForwardMessagesForXhs(note, event.sender.userId));
-            recentlyParsed.set(cacheKey, now);
+            // 标记实际获取到的URL（可能与输入URL不同）
             if (note.url && note.url !== target.url) {
-              recentlyParsed.set(getCacheKey({ kind: 'xhs', url: note.url }), now);
+              markRecentlyParsed(getCacheKeys({ kind: 'xhs', url: note.url }), now);
             }
           } catch (error) {
             logger.warn(`XHS parse failed: ${formatError(error)}`);
@@ -161,23 +164,21 @@ const plugin = definePlugin({
               ? await fetchBiliVideoFromUrl(target.url)
               : await fetchBiliVideoFromId(target.idType, target.id);
           if (video) {
-            const targetUrl = target.kind === 'bili' ? target.url : '';
-            const canonicalUrl = canonicalizeUrlForDedup(video.url || targetUrl);
+            const canonicalUrl = canonicalizeUrlForDedup(video.url || (target.kind === 'bili' ? target.url : ''));
+            const videoCacheKeys = getBiliCacheKeysFromVideo(video);
+
+            // 当前批次内去重检查
             if (canonicalUrl && seenCanonical.has(canonicalUrl)) {
-              recentlyParsed.set(cacheKey, now);
-              if (video.url && target.kind === 'bili' && video.url !== target.url) {
-                recentlyParsed.set(getCacheKey({ kind: 'bili', url: video.url }), now);
-              }
+              // 标记视频的其他缓存键（BV、AV等）
+              markRecentlyParsed(videoCacheKeys, now);
               continue;
             }
             if (canonicalUrl) {
               seenCanonical.add(canonicalUrl);
             }
             forwardMessages.push(...await buildForwardMessagesForBili(video, event.sender.userId));
-            recentlyParsed.set(cacheKey, now);
-            if (video.url && target.kind === 'bili' && video.url !== target.url) {
-              recentlyParsed.set(getCacheKey({ kind: 'bili', url: video.url }), now);
-            }
+            // 标记视频的所有缓存键（URL、BV、AV等）
+            markRecentlyParsed(videoCacheKeys, now);
           }
         } catch (error) {
           logger.warn(`Bilibili parse failed: ${formatError(error)}`);
@@ -200,19 +201,97 @@ const plugin = definePlugin({
 
 export default plugin;
 
-function getCacheKey(target: LinkTarget): string {
+function getCacheKeys(target: LinkTarget): string[] {
   if (target.kind === 'xhs') {
-    const noteId = extractXhsNoteId(target.url);
-    if (noteId) {
-      return `xhs:${noteId}`;
-    }
+    return getXhsCacheKeys(target.url);
   }
-  if (target.kind === 'bili-id') {
-    return `${target.kind}:${target.idType}:${target.id}`;
+  if (target.kind === 'bili') {
+    return getBiliCacheKeysFromUrl(target.url);
   }
-  return `${target.kind}:${target.url}`;
+  return getBiliCacheKeysFromId(target.idType, target.id);
 }
 
+function getXhsCacheKeys(url: string): string[] {
+  const noteId = extractXhsNoteId(url);
+  if (noteId) {
+    return [`xhs:${noteId}`];
+  }
+  return [`xhs:${url}`];
+}
+
+function getBiliCacheKeysFromUrl(url: string): string[] {
+  const keys = new Set<string>();
+  const canonicalUrl = canonicalizeUrlForDedup(url) || url;
+  keys.add(`bili:${canonicalUrl}`);
+  const parsed = extractBiliIdFromUrl(url);
+  if (parsed) {
+    for (const key of getBiliCacheKeysFromId(parsed.type, parsed.id)) {
+      keys.add(key);
+    }
+  }
+  return Array.from(keys);
+}
+
+function getBiliCacheKeysFromId(idType: 'bv' | 'av', id: string): string[] {
+  const normalizedId = normalizeBiliId(idType, id);
+  const keys = new Set<string>();
+  keys.add(`bili-id:${idType}:${normalizedId}`);
+  const canonicalUrl =
+    idType === 'bv'
+      ? `https://www.bilibili.com/video/${normalizedId}`
+      : `https://www.bilibili.com/video/av${normalizedId}`;
+  keys.add(`bili:${canonicalizeUrlForDedup(canonicalUrl)}`);
+  return Array.from(keys);
+}
+
+function getBiliCacheKeysFromVideo(video: BiliVideo): string[] {
+  const keys = new Set<string>();
+  if (video.url) {
+    for (const key of getBiliCacheKeysFromUrl(video.url)) {
+      keys.add(key);
+    }
+  }
+  if (video.bvid) {
+    for (const key of getBiliCacheKeysFromId('bv', video.bvid)) {
+      keys.add(key);
+    }
+  }
+  if (typeof video.aid === 'number') {
+    for (const key of getBiliCacheKeysFromId('av', String(video.aid))) {
+      keys.add(key);
+    }
+  }
+  return Array.from(keys);
+}
+
+function normalizeBiliId(idType: 'bv' | 'av', id: string): string {
+  if (!id) {
+    return id;
+  }
+  if (idType === 'bv') {
+    if (/^bv/i.test(id)) {
+      return `BV${id.slice(2)}`;
+    }
+    return `BV${id}`;
+  }
+  return id.replace(/^av/i, '');
+}
+
+function isRecentlyParsed(keys: string[], now: number): boolean {
+  for (const key of keys) {
+    const lastParsed = recentlyParsed.get(key);
+    if (typeof lastParsed === 'number' && now - lastParsed < CACHE_DURATION_MS) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function markRecentlyParsed(keys: string[], now: number): void {
+  for (const key of keys) {
+    recentlyParsed.set(key, now);
+  }
+}
 
 const LINK_HINT_REGEX = /(https?:\/\/|www\.|xhslink\.com|xiaohongshu\.com|b23\.tv|bilibili\.com|bv[0-9a-z]{8,}|av\d{6,})/i;
 const MAX_CANDIDATE_TEXTS = 80;
@@ -666,7 +745,7 @@ function resolveLogEnabled(value: unknown): boolean {
 function createPluginLogger(base: any, enabled: boolean): PluginLogger {
   const makeHandler = (method: 'info' | 'warn' | 'debug' | 'error') => {
     if (!enabled || typeof base?.[method] !== 'function') {
-      return () => {};
+      return () => { };
     }
     return base[method].bind(base);
   };
