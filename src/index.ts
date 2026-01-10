@@ -11,7 +11,7 @@ import {
   fetchXhsNote,
   buildForwardMessagesForXhs,
   XHS_DOMAINS,
-} from './xhs';
+} from './xhs.js';
 import {
   extractBiliUrlsFromText,
   extractBiliIdsFromText,
@@ -20,8 +20,8 @@ import {
   buildForwardMessagesForBili,
   extractBiliIdFromUrl,
   type BiliVideo,
-} from './bili';
-import { defaultConfig, type LinkAnalysisConfig } from './config';
+} from './bili.js';
+import { defaultConfig, type LinkAnalysisConfig } from './config.js';
 
 type LinkTarget =
   | { kind: 'xhs'; url: string }
