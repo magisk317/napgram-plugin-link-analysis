@@ -212,16 +212,9 @@ import { buildPreviewMessages, type PreviewMetadata } from './common.js';
 export async function buildForwardMessagesForBili(
   video: BiliVideo,
   senderId: string,
+  senderName: string,
 ): Promise<ForwardMessage[]> {
   const downloadedVideo = await maybeDownloadBiliVideo(video);
-
-  // Construct rich footer/desc from existing formatters
-  // We want to preserve the text layout as much as possible.
-  // formatBiliText returns a big joined string. 
-  // We can pass that as "desc" and leave others empty? 
-  // Or we can try to decompose it.
-  // common.ts puts Title and Author separately.
-  // Let's use common fields where they fit.
 
   const ids = formatBiliIds(video);
   const detail = formatBiliDetail(video);
@@ -242,13 +235,13 @@ export async function buildForwardMessagesForBili(
     videoUrl: downloadedVideo || undefined,
   };
 
-  const messages = buildPreviewMessages(meta, senderId, 'B站解析');
+  const messages = buildPreviewMessages(meta, senderId, senderName);
 
   // Split media links into separate messages
   if (video.play?.url) {
     messages.push({
       userId: senderId,
-      userName: 'B站解析',
+      userName: senderName,
       segments: [{ type: 'text', data: { text: `播放直链：${video.play.url}` } }],
     });
   }
@@ -256,7 +249,7 @@ export async function buildForwardMessagesForBili(
   if (video.download?.url && video.download.url !== video.play?.url) {
     messages.push({
       userId: senderId,
-      userName: 'B站解析',
+      userName: senderName,
       segments: [{ type: 'text', data: { text: `下载链接：${video.download.url}` } }],
     });
   }

@@ -67,7 +67,7 @@ export async function fetchDouyinVideo(url: string): Promise<DouyinVideo | null>
 
 import { buildPreviewMessages, type PreviewMetadata } from './common.js';
 
-export function buildForwardMessagesForDouyin(video: DouyinVideo, senderId: string): ForwardMessage[] {
+export function buildForwardMessagesForDouyin(video: DouyinVideo, senderId: string, senderName: string): ForwardMessage[] {
     const meta: PreviewMetadata = {
         title: video.title,
         author: video.author,
@@ -82,5 +82,5 @@ export function buildForwardMessagesForDouyin(video: DouyinVideo, senderId: stri
         footer: video.duration ? `时长: ${video.duration}ms` : undefined, // Add more stats if available
     };
 
-    return buildPreviewMessages(meta, senderId, '抖音解析');
+    return buildPreviewMessages(meta, senderId, senderName);
 }

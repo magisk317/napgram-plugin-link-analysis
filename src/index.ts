@@ -109,6 +109,11 @@ const plugin = definePlugin({
         return;
       }
 
+      // Use cast to access properties that might exist at runtime even if not in type definition,
+      // or fall back to known properties.
+      const sender = event.sender as any;
+      const senderName = sender.card || sender.nickname || sender.userNick || sender.userName || 'Unknown';
+
       const targets = extractLinkTargets(text);
       if (!targets.length) {
         return;
@@ -175,7 +180,7 @@ const plugin = definePlugin({
               checkAndAddToSeen(canonicalizeUrlForDedup(shareMeta.jumpUrl), seenCanonical);
             }
             // seenCanonical已在checkAndAddToSeen中更新
-            forwardMessages.push(...buildForwardMessagesForXhs(note, event.sender.userId));
+            forwardMessages.push(...buildForwardMessagesForXhs(note, event.sender.userId, senderName));
             // 标记实际获取到的URL（可能与输入URL不同）
             if (note.url && note.url !== target.url) {
               markParsed(getCacheKeys({ kind: 'xhs', url: note.url }), recentlyParsed, now);
@@ -191,7 +196,7 @@ const plugin = definePlugin({
                   ? `xhs:${fallbackId}`
                   : canonicalizeUrlForDedup(fallbackNote.url || target.url);
                 if (!checkAndAddToSeen(fallbackKey, seenCanonical)) {
-                  forwardMessages.push(...buildForwardMessagesForXhs(fallbackNote, event.sender.userId));
+                  forwardMessages.push(...buildForwardMessagesForXhs(fallbackNote, event.sender.userId, senderName));
                 }
               }
             }
@@ -218,7 +223,7 @@ const plugin = definePlugin({
                 continue;
               }
               // seenCanonical已在checkAndAddToSeen中更新
-              forwardMessages.push(...await buildForwardMessagesForBili(video, event.sender.userId));
+              forwardMessages.push(...await buildForwardMessagesForBili(video, event.sender.userId, senderName));
             }
           } catch (error) {
             logger.warn(`Bilibili parse failed: ${formatError(error)}`);
@@ -236,7 +241,7 @@ const plugin = definePlugin({
               if (checkAndAddToSeen(canonicalUrl, seenCanonical)) {
                 continue;
               }
-              forwardMessages.push(...buildForwardMessagesForDouyin(video, event.sender.userId));
+              forwardMessages.push(...buildForwardMessagesForDouyin(video, event.sender.userId, senderName));
               // 标记为已解析
               markParsed([`douyin:${canonicalUrl}`], recentlyParsed, now);
             }

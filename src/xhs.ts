@@ -87,7 +87,7 @@ export async function fetchXhsNote(rawUrl: string): Promise<XhsNote> {
 
 import { buildPreviewMessages, type PreviewMetadata } from './common.js';
 
-export function buildForwardMessagesForXhs(note: XhsNote, senderId: string): ForwardMessage[] {
+export function buildForwardMessagesForXhs(note: XhsNote, senderId: string, senderName: string): ForwardMessage[] {
   // Use existing format logic for description? 
   // formatXhsText joins Title + Content + Link.
   // We can separate them for common.ts
@@ -105,7 +105,7 @@ export function buildForwardMessagesForXhs(note: XhsNote, senderId: string): For
     images: note.images,
   };
 
-  return buildPreviewMessages(meta, senderId, '小红书解析');
+  return buildPreviewMessages(meta, senderId, senderName);
 }
 
 function normalizeInputUrl(input: string): string | null {
