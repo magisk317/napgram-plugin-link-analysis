@@ -49,9 +49,7 @@ type ShareMeta = {
 
 const MAX_URLS = 5;
 
-// 内存缓存：存储最近解析的链接和时间戳
-const recentlyParsed = new Map<string, number>();
-const CACHE_DURATION_MS = 60 * 1000; // 1分钟
+// 内存缓存管理已移入 dedup-utils.ts
 const recentlyHandledMessages = new Map<string, number>();
 const MESSAGE_CACHE_DURATION_MS = 15 * 1000;
 
@@ -75,17 +73,13 @@ const plugin = definePlugin({
     // 定期清理过期缓存
     const cleanupInterval = setInterval(() => {
       const now = Date.now();
-      for (const [key, timestamp] of recentlyParsed.entries()) {
-        if (now - timestamp > CACHE_DURATION_MS) {
-          recentlyParsed.delete(key);
-        }
-      }
       for (const [key, timestamp] of recentlyHandledMessages.entries()) {
         if (now - timestamp > MESSAGE_CACHE_DURATION_MS) {
           recentlyHandledMessages.delete(key);
         }
       }
     }, 30 * 1000); // 每30秒清理一次
+
 
     ctx.on('message', async (event) => {
       const messageId = String((event as any)?.message?.id ?? (event as any)?.messageId ?? '');
@@ -122,13 +116,13 @@ const plugin = definePlugin({
       const uniqueTargets = deduplicateLinkTargets(targets).slice(0, MAX_URLS);
 
       // 过滤掉最近1分钟内已解析的链接，并立即标记通过的链接（原子操作）
-      const now = Date.now();
+      // const now = Date.now(); // 移除，dedup-utils 内部处理
       const targetsToProcess: LinkTarget[] = [];
 
       for (const target of uniqueTargets) {
         const cacheKeys = getCacheKeys(target);
         // 原子操作：检查并立即标记，避免并发竞态
-        if (checkAndMarkParsed(cacheKeys, recentlyParsed, CACHE_DURATION_MS, now)) {
+        if (checkAndMarkParsed(cacheKeys)) {
           logger.info(`链接去重：跳过最近已解析的链接 ${cacheKeys[0] ?? 'unknown'}`);
           continue;
         }
@@ -172,7 +166,7 @@ const plugin = definePlugin({
             if (checkAndAddToSeen(dedupKey, seenCanonical)) {
               // 当前批次内去重，标记实际获取到的URL
               if (note.url && note.url !== target.url) {
-                markParsed(getCacheKeys({ kind: 'xhs', url: note.url }), recentlyParsed, now);
+                markParsed(getCacheKeys({ kind: 'xhs', url: note.url }));
               }
               continue;
             }
@@ -183,7 +177,7 @@ const plugin = definePlugin({
             forwardMessages.push(...buildForwardMessagesForXhs(note, event.sender.userId, senderName));
             // 标记实际获取到的URL（可能与输入URL不同）
             if (note.url && note.url !== target.url) {
-              markParsed(getCacheKeys({ kind: 'xhs', url: note.url }), recentlyParsed, now);
+              markParsed(getCacheKeys({ kind: 'xhs', url: note.url }));
             }
           } catch (error) {
             logger.warn(`XHS parse failed: ${formatError(error)}`);
@@ -216,7 +210,7 @@ const plugin = definePlugin({
               const videoCacheKeys = getBiliCacheKeysFromVideo(video);
 
               // 立即标记所有关联的缓存键（URL、BV、AV等），防止并在下载期间重复处理
-              markParsed(videoCacheKeys, recentlyParsed, now);
+              markParsed(videoCacheKeys);
 
               // 当前批次内去重检查
               if (checkAndAddToSeen(canonicalUrl, seenCanonical)) {
@@ -243,7 +237,7 @@ const plugin = definePlugin({
               }
               forwardMessages.push(...buildForwardMessagesForDouyin(video, event.sender.userId, senderName));
               // 标记为已解析
-              markParsed([`douyin:${canonicalUrl}`], recentlyParsed, now);
+              markParsed([`douyin:${canonicalUrl}`]);
             }
           } catch (error) {
             logger.warn(`Douyin parse failed: ${formatError(error)}`);
