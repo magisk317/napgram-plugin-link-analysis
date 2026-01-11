@@ -24,5 +24,7 @@ jobs:
         run: pnpm prisma generate
         env:
           DATABASE_URL: "postgresql://postgres:password@localhost:5432/napgram?schema=public"
+      - name: Check ESM imports
+        run: bash scripts/check-esm-imports.sh
       - run: pnpm validate
       - run: pnpm type-check
