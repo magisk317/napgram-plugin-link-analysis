@@ -22,6 +22,11 @@ import {
   type BiliVideo,
 } from './bili.js';
 import { defaultConfig, type LinkAnalysisConfig } from './config.js';
+import {
+  checkAndMarkParsed,
+  checkAndAddToSeen,
+  markRecentlyParsed as markParsed,
+} from './dedup-utils.js';
 
 type LinkTarget =
   | { kind: 'xhs'; url: string }
@@ -97,27 +102,25 @@ const plugin = definePlugin({
 
       const uniqueTargets = deduplicateLinkTargets(targets).slice(0, MAX_URLS);
 
-      // 过滤掉最近1分钟内已解析的链接
+      // 过滤掉最近1分钟内已解析的链接，并立即标记通过的链接（原子操作）
       const now = Date.now();
-      const targetsToProcess = uniqueTargets.filter((target) => {
+      const targetsToProcess: LinkTarget[] = [];
+
+      for (const target of uniqueTargets) {
         const cacheKeys = getCacheKeys(target);
-        if (isRecentlyParsed(cacheKeys, now)) {
+        // 原子操作：检查并立即标记，避免并发竞态
+        if (checkAndMarkParsed(cacheKeys, recentlyParsed, CACHE_DURATION_MS, now)) {
           logger.info(`链接去重：跳过最近已解析的链接 ${cacheKeys[0] ?? 'unknown'}`);
-          return false;
+          continue;
         }
-        return true;
-      });
+        // 已在checkAndMarkParsed中标记
+        logger.info(`链接去重：标记链接为已处理 ${cacheKeys[0] ?? 'unknown'}`);
+        targetsToProcess.push(target);
+      }
 
       if (!targetsToProcess.length) {
         logger.info('链接去重：所有链接都在1分钟内已解析过，跳过处理');
         return;
-      }
-
-      // 立即标记所有要处理的链接，防止并发消息重复处理
-      for (const target of targetsToProcess) {
-        const cacheKeys = getCacheKeys(target);
-        markRecentlyParsed(cacheKeys, now);
-        logger.info(`链接去重：标记链接为已处理 ${cacheKeys[0] ?? 'unknown'}`);
       }
 
       const forwardMessages: ForwardMessage[] = [];
@@ -137,20 +140,18 @@ const plugin = definePlugin({
               note.sourceUrl = preferredXhsUrl;
             }
             const dedupKey = targetId ? `xhs:${targetId}` : canonicalizeUrlForDedup(note.url || target.url);
-            if (dedupKey && seenCanonical.has(dedupKey)) {
+            if (checkAndAddToSeen(dedupKey, seenCanonical)) {
               // 当前批次内去重，标记实际获取到的URL
               if (note.url && note.url !== target.url) {
-                markRecentlyParsed(getCacheKeys({ kind: 'xhs', url: note.url }), now);
+                markParsed(getCacheKeys({ kind: 'xhs', url: note.url }), recentlyParsed, now);
               }
               continue;
             }
-            if (dedupKey) {
-              seenCanonical.add(dedupKey);
-            }
+            // seenCanonical已在checkAndAddToSeen中更新
             forwardMessages.push(...buildForwardMessagesForXhs(note, event.sender.userId));
             // 标记实际获取到的URL（可能与输入URL不同）
             if (note.url && note.url !== target.url) {
-              markRecentlyParsed(getCacheKeys({ kind: 'xhs', url: note.url }), now);
+              markParsed(getCacheKeys({ kind: 'xhs', url: note.url }), recentlyParsed, now);
             }
           } catch (error) {
             logger.warn(`XHS parse failed: ${formatError(error)}`);
@@ -168,17 +169,15 @@ const plugin = definePlugin({
             const videoCacheKeys = getBiliCacheKeysFromVideo(video);
 
             // 当前批次内去重检查
-            if (canonicalUrl && seenCanonical.has(canonicalUrl)) {
+            if (checkAndAddToSeen(canonicalUrl, seenCanonical)) {
               // 标记视频的其他缓存键（BV、AV等）
-              markRecentlyParsed(videoCacheKeys, now);
+              markParsed(videoCacheKeys, recentlyParsed, now);
               continue;
             }
-            if (canonicalUrl) {
-              seenCanonical.add(canonicalUrl);
-            }
+            // seenCanonical已在checkAndAddToSeen中更新
             forwardMessages.push(...await buildForwardMessagesForBili(video, event.sender.userId));
             // 标记视频的所有缓存键（URL、BV、AV等）
-            markRecentlyParsed(videoCacheKeys, now);
+            markParsed(videoCacheKeys, recentlyParsed, now);
           }
         } catch (error) {
           logger.warn(`Bilibili parse failed: ${formatError(error)}`);
@@ -277,21 +276,7 @@ function normalizeBiliId(idType: 'bv' | 'av', id: string): string {
   return id.replace(/^av/i, '');
 }
 
-function isRecentlyParsed(keys: string[], now: number): boolean {
-  for (const key of keys) {
-    const lastParsed = recentlyParsed.get(key);
-    if (typeof lastParsed === 'number' && now - lastParsed < CACHE_DURATION_MS) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function markRecentlyParsed(keys: string[], now: number): void {
-  for (const key of keys) {
-    recentlyParsed.set(key, now);
-  }
-}
+// 去重辅助函数已移至 dedup-utils.ts
 
 const LINK_HINT_REGEX = /(https?:\/\/|www\.|xhslink\.com|xiaohongshu\.com|b23\.tv|bilibili\.com|bv[0-9a-z]{8,}|av\d{6,})/i;
 const MAX_CANDIDATE_TEXTS = 80;
