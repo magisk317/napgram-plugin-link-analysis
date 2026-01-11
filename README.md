@@ -1,6 +1,6 @@
 # napgram-plugin-link-analysis
 
-NapGram 原生插件：链接解析与预览（支持小红书 / B 站）。
+[NapGram](https://github.com/NapGram/NapGram) 原生插件：链接解析与预览（支持小红书 / B 站）。
 
 自动识别消息中的小红书与 B 站链接，抓取标题/简介/封面并生成预览消息。
 
