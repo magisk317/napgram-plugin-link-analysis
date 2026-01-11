@@ -11,6 +11,7 @@ import {
   fetchXhsNote,
   buildForwardMessagesForXhs,
   XHS_DOMAINS,
+  type XhsNote,
 } from './xhs.js';
 import {
   extractBiliUrlsFromText,
@@ -32,6 +33,13 @@ type LinkTarget =
   | { kind: 'xhs'; url: string }
   | { kind: 'bili'; url: string }
   | { kind: 'bili-id'; idType: 'bv' | 'av'; id: string };
+
+type ShareMeta = {
+  desc?: string;
+  jumpUrl?: string;
+  title?: string;
+  preview?: string;
+};
 
 const MAX_URLS = 5;
 
@@ -133,11 +141,21 @@ const plugin = definePlugin({
             const targetId = extractXhsNoteId(target.url);
             const fetchUrl = preferredXhsId && targetId && preferredXhsId === targetId ? preferredXhsUrl! : target.url;
             const note = await fetchXhsNote(fetchUrl);
-            if (shareMeta.desc) {
-              note.content = shareMeta.desc;
+            const shouldApplyShareMeta = shouldUseShareMetaForTarget(shareMeta, target.url);
+            if (shouldApplyShareMeta) {
+              applyShareMetaToXhsNote(note, shareMeta);
+            }
+            if (logger.enabled) {
+              logger.info('[link-analysis] XHS parsed', {
+                title: note.title,
+                imageCount: note.images.length,
+                images: note.images.slice(0, 6),
+              });
             }
             if (preferredXhsUrl && targetId && preferredXhsId === targetId) {
               note.sourceUrl = preferredXhsUrl;
+            } else if (shouldApplyShareMeta && shareMeta.jumpUrl) {
+              note.sourceUrl = shareMeta.jumpUrl;
             }
             const dedupKey = targetId ? `xhs:${targetId}` : canonicalizeUrlForDedup(note.url || target.url);
             if (checkAndAddToSeen(dedupKey, seenCanonical)) {
@@ -147,6 +165,9 @@ const plugin = definePlugin({
               }
               continue;
             }
+            if (shouldApplyShareMeta && shareMeta.jumpUrl) {
+              checkAndAddToSeen(canonicalizeUrlForDedup(shareMeta.jumpUrl), seenCanonical);
+            }
             // seenCanonical已在checkAndAddToSeen中更新
             forwardMessages.push(...buildForwardMessagesForXhs(note, event.sender.userId));
             // 标记实际获取到的URL（可能与输入URL不同）
@@ -155,6 +176,19 @@ const plugin = definePlugin({
             }
           } catch (error) {
             logger.warn(`XHS parse failed: ${formatError(error)}`);
+            const shouldApplyShareMeta = shouldUseShareMetaForTarget(shareMeta, target.url);
+            if (shouldApplyShareMeta) {
+              const fallbackNote = buildFallbackXhsNote(shareMeta, target.url);
+              if (fallbackNote) {
+                const fallbackId = extractXhsNoteId(fallbackNote.url);
+                const fallbackKey = fallbackId
+                  ? `xhs:${fallbackId}`
+                  : canonicalizeUrlForDedup(fallbackNote.url || target.url);
+                if (!checkAndAddToSeen(fallbackKey, seenCanonical)) {
+                  forwardMessages.push(...buildForwardMessagesForXhs(fallbackNote, event.sender.userId));
+                }
+              }
+            }
           }
           continue;
         }
@@ -489,7 +523,7 @@ function shouldSkipSelfMessage(event: any): boolean {
   return senderId !== '' && String(senderId) === String(selfId);
 }
 
-function extractShareMeta(event: any): { desc?: string; jumpUrl?: string } {
+function extractShareMeta(event: any): ShareMeta {
   const raw = event?.raw ?? event?.message?.raw ?? event;
   const rawPayload = raw?.metadata?.raw ?? raw?.raw ?? raw;
   const candidates: Array<Record<string, any>> = [];
@@ -520,19 +554,25 @@ function extractShareMeta(event: any): { desc?: string; jumpUrl?: string } {
   }
   let desc: string | undefined;
   let jumpUrl: string | undefined;
+  let title: string | undefined;
+  let preview: string | undefined;
   for (const candidate of candidates) {
     desc = desc || findFirstStringByKeys(candidate, ['desc']);
+    title = title || findFirstStringByKeys(candidate, ['title']);
+    preview = preview || findFirstStringByKeys(candidate, ['preview']);
     const nextJump = findFirstStringByKeys(candidate, ['jumpUrl']);
     if (!jumpUrl && nextJump && isLikelyXhsLink(nextJump)) {
       jumpUrl = nextJump;
     }
-    if (desc && jumpUrl) {
+    if (desc && jumpUrl && title && preview) {
       break;
     }
   }
   return {
     desc: desc?.trim() || undefined,
     jumpUrl: jumpUrl?.trim() || undefined,
+    title: title?.trim() || undefined,
+    preview: preview?.trim() || undefined,
   };
 }
 
@@ -544,6 +584,101 @@ function isLikelyXhsLink(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+function shouldUseShareMetaForTarget(shareMeta: ShareMeta, targetUrl: string): boolean {
+  if (!shareMeta.jumpUrl) {
+    return false;
+  }
+  if (shareMeta.jumpUrl === targetUrl) {
+    return true;
+  }
+  const shareId = extractXhsNoteId(shareMeta.jumpUrl);
+  const targetId = extractXhsNoteId(targetUrl);
+  if (shareId && targetId && shareId === targetId) {
+    return true;
+  }
+  return stripUrlProtocol(targetUrl).startsWith(stripUrlProtocol(shareMeta.jumpUrl));
+}
+
+function applyShareMetaToXhsNote(note: XhsNote, shareMeta: ShareMeta): void {
+  const existingTitle = note.title.trim();
+  const existingContent = note.content.trim();
+  if (shareMeta.desc && (!existingContent || existingContent === existingTitle)) {
+    note.content = shareMeta.desc;
+  }
+  const shareTitle = shareMeta.title?.trim();
+  const sharePreview = normalizeHttpUrl(shareMeta.preview);
+  const isUnavailable = isXhsUnavailableTitle(note.title);
+  const shouldReplaceTitle = !note.title.trim() || isUnavailable;
+  if (shareTitle && shouldReplaceTitle) {
+    note.title = shareTitle;
+  }
+  if (sharePreview) {
+    if (isUnavailable) {
+      note.images = [sharePreview];
+    } else if (!note.images.length) {
+      note.images.push(sharePreview);
+    }
+    if (!note.coverImage || isUnavailable) {
+      note.coverImage = sharePreview;
+    }
+  }
+}
+
+function buildFallbackXhsNote(shareMeta: ShareMeta, targetUrl: string): XhsNote | null {
+  const title = shareMeta.title?.trim() || '';
+  const content = shareMeta.desc?.trim() || '';
+  const preview = normalizeHttpUrl(shareMeta.preview);
+  const sourceUrl = shareMeta.jumpUrl?.trim() || targetUrl;
+
+  if (!title && !content && !preview) {
+    return null;
+  }
+
+  return {
+    title: title || '小红书',
+    content,
+    images: preview ? [preview] : [],
+    coverImage: preview,
+    url: sourceUrl,
+    sourceUrl,
+  };
+}
+
+function normalizeHttpUrl(value?: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const normalized = trimmed.startsWith('//') ? `https:${trimmed}` : trimmed;
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function stripUrlProtocol(value: string): string {
+  return value.replace(/^https?:\/\//i, '');
+}
+
+function isXhsUnavailableTitle(title: string): boolean {
+  const normalized = title.trim();
+  if (!normalized) {
+    return true;
+  }
+  if (normalized === '小红书') {
+    return true;
+  }
+  return /页面不见了|页面不存在|内容已失效|内容已被删除|无法查看/.test(normalized);
 }
 
 function findFirstStringByKeys(

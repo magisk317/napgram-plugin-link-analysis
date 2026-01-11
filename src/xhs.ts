@@ -11,8 +11,12 @@ export type XhsNote = {
 
 export const XHS_DOMAINS = ['xiaohongshu.com', 'www.xiaohongshu.com', 'xhslink.com'] as const;
 
-const DEFAULT_USER_AGENT =
+const DESKTOP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+const MOBILE_USER_AGENT =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+// TODO: Support authenticated cookie flow for desktop requests to improve no-watermark success rate.
+const USER_AGENT_CANDIDATES = [DESKTOP_USER_AGENT, MOBILE_USER_AGENT];
 const MAX_URL_LENGTH = 2048;
 const MAX_IMAGES = 6;
 const MAX_CONTENT_LENGTH = 260;
@@ -25,6 +29,28 @@ const DOMAIN_EXTRACT_PATTERN = new RegExp(
   'gi'
 );
 const TRAILING_PUNCTUATION_PATTERN = /[)\]\}>"'!?.,]+$/u;
+const URL_TRUNCATE_PATTERNS = [
+  '"',
+  "'",
+  ',',
+  ')',
+  ']',
+  '}',
+  '<',
+  '>',
+  '%22',
+  '%27',
+  '%2c',
+  '&quot;',
+  '&#34;',
+  '&#x22;',
+  '&#44;',
+  '\\u0022',
+  '\\u0027',
+  '\\u002c',
+  '\\"',
+  "\\'",
+] as const;
 const HTML_ENTITY_REGEX = /&(#x?[0-9a-f]+|\w+);/gi;
 const HTML_ENTITY_MAP: Record<string, string> = {
   amp: '&',
@@ -185,7 +211,12 @@ function sanitizeExtractedUrl(raw: string): string | null {
     return null;
   }
 
-  return decodeHtmlEntities(trimmed);
+  const truncated = trimUrlAtDelimiter(trimmed);
+  if (!truncated) {
+    return null;
+  }
+
+  return decodeHtmlEntities(truncated);
 }
 
 function decodeHtmlEntities(value: string): string {
@@ -217,31 +248,48 @@ function decodeHtmlEntities(value: string): string {
   });
 }
 
+function trimUrlAtDelimiter(value: string): string {
+  const lower = value.toLowerCase();
+  let cutoff = value.length;
+  for (const token of URL_TRUNCATE_PATTERNS) {
+    const index = lower.indexOf(token);
+    if (index >= 0 && index < cutoff) {
+      cutoff = index;
+    }
+  }
+  return cutoff === value.length ? value : value.slice(0, cutoff);
+}
+
 async function fetchXhsHtml(url: string): Promise<{ html: string; url: string }> {
-  const headers = {
-    'User-Agent': DEFAULT_USER_AGENT,
+  let lastError: unknown;
+  const baseHeaders = {
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
   };
 
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const response = await fetch(url, {
-        headers,
-        redirect: 'follow',
-      });
+  for (const userAgent of USER_AGENT_CANDIDATES) {
+    const headers = { ...baseHeaders, 'User-Agent': userAgent };
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await fetch(url, {
+          headers,
+          redirect: 'follow',
+        });
 
-      if (!response.ok) {
-        throw new Error(`request failed: ${response.status}`);
-      }
+        if (!response.ok) {
+          throw new Error(`request failed: ${response.status}`);
+        }
 
-      const html = await response.text();
-      return { html, url: response.url || url };
-    } catch (error) {
-      lastError = error;
-      if (attempt < 2) {
-        await delay(attempt * 400);
+        const html = await response.text();
+        if (!isLikelyXhsNoteHtml(html)) {
+          throw new Error('request returned no note data');
+        }
+        return { html, url: response.url || url };
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) {
+          await delay(attempt * 400);
+        }
       }
     }
   }
@@ -268,10 +316,11 @@ function parseXhsNote(html: string, url: string): XhsNote {
   };
 
   const jsonLd = extractJsonLd(html);
+  let jsonImages: string[] = [];
   if (jsonLd) {
     const jsonTitle = firstString(jsonLd.headline, jsonLd.alternativeHeadline, jsonLd.name);
     const jsonContent = firstString(jsonLd.articleBody, jsonLd.description);
-    const jsonImages = normalizeImages(jsonLd.image);
+    jsonImages = normalizeImages(jsonLd.image);
 
     if (jsonTitle) {
       note.title = jsonTitle;
@@ -279,19 +328,28 @@ function parseXhsNote(html: string, url: string): XhsNote {
     if (jsonContent) {
       note.content = jsonContent;
     }
-    if (jsonImages.length) {
-      note.images.push(...jsonImages);
+  }
+
+  const noteData = extractNoteDataFromHtml(html);
+  if (noteData) {
+    if (noteData.title) {
+      note.title = noteData.title;
+    }
+    if (noteData.desc) {
+      note.content = noteData.desc;
     }
   }
 
   const imageListImages = extractImageListFromHtml(html);
   if (imageListImages.length) {
-    note.images.push(...imageListImages);
-  }
-
-  const embeddedImages = extractImagesFromHtml(html);
-  if (embeddedImages.length) {
-    note.images.push(...embeddedImages);
+    note.images = imageListImages;
+  } else if (jsonImages.length) {
+    note.images.push(...jsonImages);
+  } else {
+    const embeddedImages = extractImagesFromHtml(html);
+    if (embeddedImages.length) {
+      note.images.push(...embeddedImages);
+    }
   }
 
   if (!note.title.trim()) {
@@ -372,7 +430,15 @@ function safeJsonParse(value: string): Record<string, any> | null {
   try {
     return JSON.parse(value) as Record<string, any>;
   } catch {
-    return null;
+    const sanitized = sanitizeLooseJson(value);
+    if (!sanitized || sanitized === value) {
+      return null;
+    }
+    try {
+      return JSON.parse(sanitized) as Record<string, any>;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -528,6 +594,17 @@ function extractImagesFromHtml(html: string): string[] {
       results.push(decoded);
     }
   }
+  const protocolRelativeMatches = html.match(/\/\/[^"'<>\\s]+/gi) ?? [];
+  for (const match of protocolRelativeMatches) {
+    const decoded = decodeUnicodeEscapes(match);
+    if (!decoded) {
+      continue;
+    }
+    const normalized = normalizeMediaUrl(decoded);
+    if (normalized && isLikelyImageUrl(normalized)) {
+      results.push(normalized);
+    }
+  }
   const escapedMatches = html.match(/https?:\\u002F\\u002F[^"'<>\\s]+/gi) ?? [];
   for (const match of escapedMatches) {
     const decoded = decodeUnicodeEscapes(match);
@@ -579,6 +656,37 @@ function extractImageListFromHtml(html: string): string[] {
   return results;
 }
 
+function extractNoteDataFromHtml(html: string): { title?: string; desc?: string } | null {
+  const marker = '"noteData":';
+  const index = html.indexOf(marker);
+  if (index === -1) {
+    return null;
+  }
+  const objectStart = html.indexOf('{', index + marker.length);
+  if (objectStart === -1) {
+    return null;
+  }
+  const objectText = extractJsonObject(html, objectStart);
+  if (!objectText) {
+    return null;
+  }
+  const parsed = safeJsonParse(objectText);
+  if (!parsed || typeof parsed !== 'object') {
+    return null;
+  }
+  const candidate =
+    (parsed as Record<string, any>)?.data?.noteData ??
+    (parsed as Record<string, any>)?.noteData ??
+    parsed;
+  const record = candidate as Record<string, unknown>;
+  const title = typeof record.title === 'string' ? record.title : undefined;
+  const desc = typeof record.desc === 'string' ? record.desc : undefined;
+  if (!title && !desc) {
+    return null;
+  }
+  return { title, desc };
+}
+
 function extractJsonArray(html: string, startIndex: number): string | null {
   let depth = 0;
   let inString = false;
@@ -608,6 +716,44 @@ function extractJsonArray(html: string, startIndex: number): string | null {
     if (ch === '[') {
       depth += 1;
     } else if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        return html.slice(startIndex, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function extractJsonObject(html: string, startIndex: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+  let quoteChar = '';
+  for (let i = startIndex; i < html.length; i += 1) {
+    const ch = html[i];
+    if (inString) {
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escapeNext = true;
+        continue;
+      }
+      if (ch === quoteChar) {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === '\'') {
+      inString = true;
+      quoteChar = ch;
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
       depth -= 1;
       if (depth === 0) {
         return html.slice(startIndex, i + 1);
@@ -700,6 +846,17 @@ function extractJsonAssignment(html: string, marker: string): string | null {
     }
   }
   return null;
+}
+
+function isLikelyXhsNoteHtml(html: string): boolean {
+  if (
+    html.includes('页面不见了') ||
+    html.includes('内容已被删除') ||
+    html.includes('你访问的页面不见了')
+  ) {
+    return false;
+  }
+  return html.includes('"noteData":') || html.includes('"imageList":');
 }
 
 function collectImageUrls(value: unknown, maxDepth: number): string[] {
@@ -814,6 +971,47 @@ function decodeUnicodeEscapes(value: string): string {
     }
     return String.fromCharCode(parsed);
   });
+}
+
+function sanitizeLooseJson(value: string): string {
+  if (!value.includes('undefined')) {
+    return value;
+  }
+  let result = '';
+  let inString = false;
+  let escapeNext = false;
+  let quoteChar = '';
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (inString) {
+      result += ch;
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escapeNext = true;
+        continue;
+      }
+      if (ch === quoteChar) {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === '\'') {
+      inString = true;
+      quoteChar = ch;
+      result += ch;
+      continue;
+    }
+    if (value.startsWith('undefined', i)) {
+      result += 'null';
+      i += 'undefined'.length - 1;
+      continue;
+    }
+    result += ch;
+  }
+  return result;
 }
 
 function deduplicateXhsImages(urls: string[]): string[] {
