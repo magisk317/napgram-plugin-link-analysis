@@ -22,6 +22,11 @@ import {
   extractBiliIdFromUrl,
   type BiliVideo,
 } from './bili.js';
+import {
+  extractDouyinUrlsFromText,
+  fetchDouyinVideo,
+  buildForwardMessagesForDouyin,
+} from './douyin.js';
 import { defaultConfig, type LinkAnalysisConfig } from './config.js';
 import {
   checkAndMarkParsed,
@@ -32,7 +37,8 @@ import {
 type LinkTarget =
   | { kind: 'xhs'; url: string }
   | { kind: 'bili'; url: string }
-  | { kind: 'bili-id'; idType: 'bv' | 'av'; id: string };
+  | { kind: 'bili-id'; idType: 'bv' | 'av'; id: string }
+  | { kind: 'douyin'; url: string };
 
 type ShareMeta = {
   desc?: string;
@@ -51,10 +57,10 @@ const MESSAGE_CACHE_DURATION_MS = 15 * 1000;
 
 const plugin = definePlugin({
   id: 'link-analysis',
-  name: 'Link Analysis (XHS/Bilibili)',
-  version: '0.1.0',
+  name: '链接解析',
+  version: '0.0.8',
   author: 'NapLink',
-  description: 'Parse Xiaohongshu and Bilibili share links and render a quick preview.',
+  description: '解析小红书、B站、抖音分享链接并生成预览。',
   defaultConfig,
   async install(ctx, config) {
     const resolvedConfig = resolveConfig(
@@ -193,28 +199,51 @@ const plugin = definePlugin({
           continue;
         }
 
-        try {
-          const video =
-            target.kind === 'bili'
-              ? await fetchBiliVideoFromUrl(target.url)
-              : await fetchBiliVideoFromId(target.idType, target.id);
-          if (video) {
-            const canonicalUrl = canonicalizeUrlForDedup(video.url || (target.kind === 'bili' ? target.url : ''));
-            const videoCacheKeys = getBiliCacheKeysFromVideo(video);
+        if (target.kind === 'bili' || target.kind === 'bili-id') {
+          try {
+            const video =
+              target.kind === 'bili'
+                ? await fetchBiliVideoFromUrl(target.url)
+                : await fetchBiliVideoFromId(target.idType, target.id);
 
-            // 当前批次内去重检查
-            if (checkAndAddToSeen(canonicalUrl, seenCanonical)) {
-              // 标记视频的其他缓存键（BV、AV等）
+            if (video) {
+              const canonicalUrl = canonicalizeUrlForDedup(video.url || (target.kind === 'bili' ? target.url : ''));
+              const videoCacheKeys = getBiliCacheKeysFromVideo(video);
+
+              // 当前批次内去重检查
+              if (checkAndAddToSeen(canonicalUrl, seenCanonical)) {
+                // 标记视频的其他缓存键（BV、AV等）
+                markParsed(videoCacheKeys, recentlyParsed, now);
+                continue;
+              }
+              // seenCanonical已在checkAndAddToSeen中更新
+              forwardMessages.push(...await buildForwardMessagesForBili(video, event.sender.userId));
+              // 标记视频的所有缓存键（URL、BV、AV等）
               markParsed(videoCacheKeys, recentlyParsed, now);
-              continue;
             }
-            // seenCanonical已在checkAndAddToSeen中更新
-            forwardMessages.push(...await buildForwardMessagesForBili(video, event.sender.userId));
-            // 标记视频的所有缓存键（URL、BV、AV等）
-            markParsed(videoCacheKeys, recentlyParsed, now);
+          } catch (error) {
+            logger.warn(`Bilibili parse failed: ${formatError(error)}`);
           }
-        } catch (error) {
-          logger.warn(`Bilibili parse failed: ${formatError(error)}`);
+        }
+      }
+
+      for (const target of targetsToProcess) {
+        if (target.kind === 'douyin') {
+          try {
+            const video = await fetchDouyinVideo(target.url);
+            if (video) {
+              const canonicalUrl = canonicalizeUrlForDedup(video.videoUrl || target.url);
+              // 简单去重，因为抖音API不一定返回唯一ID，这里暂用videoUrl
+              if (checkAndAddToSeen(canonicalUrl, seenCanonical)) {
+                continue;
+              }
+              forwardMessages.push(...buildForwardMessagesForDouyin(video, event.sender.userId));
+              // 标记为已解析
+              markParsed([`douyin:${canonicalUrl}`], recentlyParsed, now);
+            }
+          } catch (error) {
+            logger.warn(`Douyin parse failed: ${formatError(error)}`);
+          }
         }
       }
 
@@ -238,10 +267,18 @@ function getCacheKeys(target: LinkTarget): string[] {
   if (target.kind === 'xhs') {
     return getXhsCacheKeys(target.url);
   }
+  if (target.kind === 'douyin') {
+    return getDouyinCacheKeys(target.url);
+  }
   if (target.kind === 'bili') {
     return getBiliCacheKeysFromUrl(target.url);
   }
   return getBiliCacheKeysFromId(target.idType, target.id);
+}
+
+function getDouyinCacheKeys(url: string): string[] {
+  // 抖音链接可能带参数，这里简单处理一下，实际可能需要更复杂的canonicalization
+  return [`douyin:${url}`];
 }
 
 function getXhsCacheKeys(url: string): string[] {
@@ -434,6 +471,10 @@ function extractLinkTargets(text: string): LinkTarget[] {
 
   for (const id of extractBiliIdsFromText(text)) {
     results.push({ kind: 'bili-id', idType: id.idType, id: id.id });
+  }
+
+  for (const url of extractDouyinUrlsFromText(text)) {
+    results.push({ kind: 'douyin', url });
   }
 
   return results;

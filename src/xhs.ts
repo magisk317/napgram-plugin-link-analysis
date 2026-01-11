@@ -85,26 +85,27 @@ export async function fetchXhsNote(rawUrl: string): Promise<XhsNote> {
   return note;
 }
 
+import { buildPreviewMessages, type PreviewMetadata } from './common.js';
+
 export function buildForwardMessagesForXhs(note: XhsNote, senderId: string): ForwardMessage[] {
-  const text = formatXhsText(note);
-  const messages: ForwardMessage[] = [
-    {
-      userId: senderId,
-      userName: '小红书解析',
-      segments: [{ type: 'text', data: { text } } as MessageSegment],
-    },
-  ];
+  // Use existing format logic for description? 
+  // formatXhsText joins Title + Content + Link.
+  // We can separate them for common.ts
 
-  const images = note.images.length ? note.images : note.coverImage ? [note.coverImage] : [];
-  for (const imageUrl of images.slice(0, MAX_IMAGES)) {
-    messages.push({
-      userId: senderId,
-      userName: '小红书解析',
-      segments: [{ type: 'image', data: { url: imageUrl } } as MessageSegment],
-    });
-  }
+  // Note: common.ts puts cover image first, then text, then other images. 
+  // This slightly changes xhs behavior which put text then all images.
+  // But this is "common implementation".
 
-  return messages;
+  const meta: PreviewMetadata = {
+    title: note.title,
+    // author: undefined, // XHS parsing doesn't seem to extract author currently
+    desc: note.content,
+    url: note.sourceUrl || note.url,
+    cover: note.coverImage,
+    images: note.images,
+  };
+
+  return buildPreviewMessages(meta, senderId, '小红书解析');
 }
 
 function normalizeInputUrl(input: string): string | null {

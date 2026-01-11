@@ -1,8 +1,8 @@
 {
   "name": "napgram-plugin-link-analysis",
   "private": true,
-  "version": "0.0.7",
-  "description": "NapGram native plugin that parses Xiaohongshu and Bilibili links with previews.",
+  "version": "0.0.8",
+  "description": "解析小红书、B站、抖音分享链接并生成预览。",
   "type": "module",
   "packageManager": "pnpm@10.27.0",
   "scripts": {

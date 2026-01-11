@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "native",
   "id": "link-analysis",
-  "name": "Link Analysis (XHS/Bilibili)",
-  "description": "Parse Xiaohongshu and Bilibili share links and render a quick preview.",
+  "name": "链接解析",
+  "description": "解析小红书、B站、抖音分享链接并生成预览。",
   "entry": "dist/index.mjs"
 }

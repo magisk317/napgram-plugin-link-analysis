@@ -207,45 +207,41 @@ export async function fetchBiliVideoFromId(idType: 'bv' | 'av', id: string): Pro
   return video;
 }
 
+import { buildPreviewMessages, type PreviewMetadata } from './common.js';
+
 export async function buildForwardMessagesForBili(
   video: BiliVideo,
   senderId: string,
 ): Promise<ForwardMessage[]> {
-  const messages: ForwardMessage[] = [];
-  if (video.coverImage) {
-    messages.push({
-      userId: senderId,
-      userName: 'B站解析',
-      segments: [{ type: 'image', data: { url: video.coverImage } } as MessageSegment],
-    });
-  }
-
-  const text = formatBiliText(video);
-  messages.push({
-    userId: senderId,
-    userName: 'B站解析',
-    segments: [{ type: 'text', data: { text } } as MessageSegment],
-  });
-
   const downloadedVideo = await maybeDownloadBiliVideo(video);
-  if (downloadedVideo) {
-    messages.push({
-      userId: senderId,
-      userName: 'B站解析',
-      segments: [{ type: 'video', data: { file: downloadedVideo } } as MessageSegment],
-    });
-  }
 
-  const linkText = formatBiliMediaLinks(video);
-  if (linkText) {
-    messages.push({
-      userId: senderId,
-      userName: 'B站解析',
-      segments: [{ type: 'text', data: { text: linkText } } as MessageSegment],
-    });
-  }
+  // Construct rich footer/desc from existing formatters
+  // We want to preserve the text layout as much as possible.
+  // formatBiliText returns a big joined string. 
+  // We can pass that as "desc" and leave others empty? 
+  // Or we can try to decompose it.
+  // common.ts puts Title and Author separately.
+  // Let's use common fields where they fit.
 
-  return messages;
+  const ids = formatBiliIds(video);
+  const detail = formatBiliDetail(video);
+  const stats = formatBiliStats(video.stats);
+  const mediaLinks = formatBiliMediaLinks(video);
+
+  const footerParts = [ids, detail, stats].filter(Boolean);
+  const footer = footerParts.join('\n\n') + (mediaLinks ? '\n\n' + mediaLinks : '');
+
+  const meta: PreviewMetadata = {
+    title: video.title,
+    author: video.upName,
+    cover: video.coverImage,
+    url: video.url,
+    desc: video.description,
+    footer: footer,
+    videoUrl: downloadedVideo || undefined,
+  };
+
+  return buildPreviewMessages(meta, senderId, 'B站解析');
 }
 
 function normalizeInputUrl(input: string): string | null {
