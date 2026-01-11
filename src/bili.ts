@@ -226,10 +226,11 @@ export async function buildForwardMessagesForBili(
   const ids = formatBiliIds(video);
   const detail = formatBiliDetail(video);
   const stats = formatBiliStats(video.stats);
-  const mediaLinks = formatBiliMediaLinks(video);
-
   const footerParts = [ids, detail, stats].filter(Boolean);
-  const footer = footerParts.join('\n\n') + (mediaLinks ? '\n\n' + mediaLinks : '');
+  const footer = footerParts.join('\n\n');
+
+  // DEBUG: LOG FOOTER
+  // console.log('[BILI DEBUG] Footer content:', footer);
 
   const meta: PreviewMetadata = {
     title: video.title,
@@ -241,7 +242,26 @@ export async function buildForwardMessagesForBili(
     videoUrl: downloadedVideo || undefined,
   };
 
-  return buildPreviewMessages(meta, senderId, 'B站解析');
+  const messages = buildPreviewMessages(meta, senderId, 'B站解析');
+
+  // Split media links into separate messages
+  if (video.play?.url) {
+    messages.push({
+      userId: senderId,
+      userName: 'B站解析',
+      segments: [{ type: 'text', data: { text: `播放直链：${video.play.url}` } }],
+    });
+  }
+
+  if (video.download?.url && video.download.url !== video.play?.url) {
+    messages.push({
+      userId: senderId,
+      userName: 'B站解析',
+      segments: [{ type: 'text', data: { text: `下载链接：${video.download.url}` } }],
+    });
+  }
+
+  return messages;
 }
 
 function normalizeInputUrl(input: string): string | null {

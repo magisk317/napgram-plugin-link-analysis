@@ -1,7 +1,7 @@
 {
   "name": "napgram-plugin-link-analysis",
   "private": true,
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "解析小红书、B站、抖音分享链接并生成预览。",
   "type": "module",
   "packageManager": "pnpm@10.27.0",

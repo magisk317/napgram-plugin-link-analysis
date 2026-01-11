@@ -58,7 +58,7 @@ const MESSAGE_CACHE_DURATION_MS = 15 * 1000;
 const plugin = definePlugin({
   id: 'link-analysis',
   name: '链接解析',
-  version: '0.0.8',
+  version: '0.0.9',
   author: 'NapLink',
   description: '解析小红书、B站、抖音分享链接并生成预览。',
   defaultConfig,
@@ -210,16 +210,15 @@ const plugin = definePlugin({
               const canonicalUrl = canonicalizeUrlForDedup(video.url || (target.kind === 'bili' ? target.url : ''));
               const videoCacheKeys = getBiliCacheKeysFromVideo(video);
 
+              // 立即标记所有关联的缓存键（URL、BV、AV等），防止并在下载期间重复处理
+              markParsed(videoCacheKeys, recentlyParsed, now);
+
               // 当前批次内去重检查
               if (checkAndAddToSeen(canonicalUrl, seenCanonical)) {
-                // 标记视频的其他缓存键（BV、AV等）
-                markParsed(videoCacheKeys, recentlyParsed, now);
                 continue;
               }
               // seenCanonical已在checkAndAddToSeen中更新
               forwardMessages.push(...await buildForwardMessagesForBili(video, event.sender.userId));
-              // 标记视频的所有缓存键（URL、BV、AV等）
-              markParsed(videoCacheKeys, recentlyParsed, now);
             }
           } catch (error) {
             logger.warn(`Bilibili parse failed: ${formatError(error)}`);

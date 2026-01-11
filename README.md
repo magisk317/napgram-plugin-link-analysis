@@ -1,14 +1,14 @@
 # napgram-plugin-link-analysis
 
-[NapGram](https://github.com/NapGram/NapGram) 原生插件：链接解析与预览（支持小红书 / B 站）。
+[NapGram](https://github.com/NapGram/NapGram) 原生插件：链接解析与预览（支持小红书 / B 站 / 抖音）。
 
-自动识别消息中的小红书与 B 站链接，抓取标题/简介/封面并生成预览消息。
+自动识别消息中的小红书、B 站、抖音链接，抓取标题/简介/封面并生成预览消息。
 
 ## 功能特点
 
-- ✅ **小红书链接解析** - 支持 xiaohongshu.com、xhslink.com 等域名
-- ✅ **B站链接解析** - 支持 bilibili.com、b23.tv 等短链接
-- ✅ **BV/AV号识别** - 自动识别文本中的 BV/AV 号
+- ✅ **小红书解析** - 支持 xiaohongshu.com、xhslink.com
+- ✅ **B站解析** - 支持 bilibili.com、b23.tv、BV/AV 号（含播放/下载直链）
+- ✅ **抖音解析** - 支持 v.douyin.com、抖音分享链接（无水印视频）
 - ✅ **智能缓存** - 同一分钟内相同链接不重复解析
 - ✅ **批量解析** - 单条消息最多解析 5 个链接
 - ✅ **安全防护** - 内置 SSRF 防护和私有地址过滤
@@ -27,7 +27,11 @@
 - BV号：直接发送 `BV1xx...` 格式的 BV 号
 - AV号：直接发送 `av123456` 格式的 AV 号
 
-插件会自动识别并返回包含标题、简介、封面图的预览消息。
+### 抖音
+- 分享链接：直接发送抖音 APP 分享的链接，如 `https://v.douyin.com/...`
+- 文本混合：支持识别包含文字的分享文本
+
+插件会自动识别并返回包含标题、简介、封面图、视频的预览消息。
 
 ## 开发
 
@@ -77,7 +81,8 @@ pnpm pack:tgz
 src/
 ├── index.ts    # 主插件文件，事件监听和缓存管理
 ├── xhs.ts      # 小红书解析模块
-└── bili.ts     # B站解析模块
+├── bili.ts     # B站解析模块
+└── douyin.ts   # 抖音解析模块
 ```
 
 ## License
