@@ -4,3 +4,4 @@ release/
 node_modules/
 *.sh
 *.md
+!scripts/check-esm-imports.sh
